@@ -114,3 +114,18 @@ export function escapeHtml(s) {
 
 export const STATE_KEY = 'cf:display-state';
 export const CHANNEL = 'chess-final';
+
+// Rows for a move list that may start from a set-up position.
+export function moveRows(sans, startFen) {
+  const parts = String(startFen || '').split(' ');
+  let no = startFen ? parseInt(parts[5], 10) || 1 : 1;
+  const blackFirst = startFen ? parts[1] === 'b' : false;
+  const rows = [];
+  let i = 0;
+  if (blackFirst && sans.length) {
+    rows.push({ n: no++, w: null, b: sans[0] });
+    i = 1;
+  }
+  for (; i < sans.length; i += 2) rows.push({ n: no++, w: sans[i], b: sans[i + 1] });
+  return rows;
+}

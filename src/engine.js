@@ -1,28 +1,56 @@
 // Thin UCI wrapper around the Stockfish web worker.
 export class Engine {
   constructor(url, onStatus) {
+    this.url = url;
     this.onStatus = onStatus || (() => {});
+    this.pending = null;
+    this.failed = false;
+    this.restarts = 0;
+    this.start();
+  }
+  start() {
     this.ready = false;
     this.searching = false;
-    this.pending = null;
     this.current = null;
-    this.failed = false;
     try {
-      this.w = new Worker(url);
+      this.w = new Worker(this.url);
     } catch (e) {
       this.failed = true;
       this.onStatus('error');
       return;
     }
     this.w.onmessage = (e) => this.onLine(typeof e.data === 'string' ? e.data : String(e.data));
-    this.w.onerror = () => {
-      this.failed = true;
-      this.onStatus('error');
+    this.w.onerror = (e) => {
+      if (e && e.preventDefault) e.preventDefault();
+      this.crashed();
     };
     this.send('uci');
   }
+  // The engine aborts on positions it considers impossible; start a fresh one.
+  crashed() {
+    const job = this.current;
+    try {
+      this.w.onmessage = null;
+      this.w.onerror = null;
+      this.w.terminate();
+    } catch (e) {}
+    this.current = null;
+    this.searching = false;
+    this.ready = false;
+    if (job && !job.cancelled && job.onFail) job.onFail(job);
+    this.restarts++;
+    if (this.restarts > 25) {
+      this.failed = true;
+      this.onStatus('error');
+      return;
+    }
+    this.onStatus('restart');
+    setTimeout(() => this.start(), 250);
+  }
   send(cmd) {
-    this.w.postMessage(cmd);
+    try {
+      this.w.postMessage(cmd);
+    } catch (e) {}
   }
   onLine(line) {
     if (line === 'uciok') {

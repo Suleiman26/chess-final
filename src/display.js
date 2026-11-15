@@ -1,6 +1,6 @@
 import { Chessground } from '@lichess-org/chessground';
 import qrcode from 'qrcode-generator';
-import { rpc, figurine, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
+import { rpc, moveRows, figurine, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
 
 const $ = (id) => document.getElementById(id);
 const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -19,20 +19,16 @@ const cg = Chessground($('board'), {
   drawable: { enabled: false, visible: false },
 });
 
-function renderMoves(sans) {
+function renderMoves(sans, startFen) {
   const el = $('moves');
-  const rows = [];
-  for (let i = 0; i < sans.length; i += 2) {
-    rows.push({ n: i / 2 + 1, w: sans[i], b: sans[i + 1] });
-  }
-  const tail = rows.slice(-9);
+  const tail = moveRows(sans, startFen).slice(-9);
   el.innerHTML = tail
     .map(
       (r, idx) =>
-        `<div class="mv-row${idx === tail.length - 1 ? ' last' : ''}"><span class="mv-n">${r.n}.</span><span class="mv">${escapeHtml(figurine(r.w, 'w'))}</span><span class="mv">${r.b ? escapeHtml(figurine(r.b, 'b')) : ''}</span></div>`,
+        `<div class="mv-row${idx === tail.length - 1 ? ' last' : ''}"><span class="mv-n">${r.n}.</span><span class="mv">${r.w ? escapeHtml(figurine(r.w, 'w')) : '…'}</span><span class="mv">${r.b ? escapeHtml(figurine(r.b, 'b')) : ''}</span></div>`,
     )
     .join('');
-  $('moves-empty').hidden = sans.length > 0;
+  $('moves-empty').hidden = sans.length > 0 || !!startFen;
 }
 
 function renderEval(ev) {
@@ -96,7 +92,7 @@ function render() {
     });
   }
   renderEval(S.ev);
-  renderMoves(S.sans || []);
+  renderMoves(S.sans || [], S.startFen || null);
   const res = $('result');
   res.hidden = !S.result;
   if (S.result) res.textContent = S.result === '1-0' ? `ניצחון ל${S.white || 'לבן'}` : S.result === '0-1' ? `ניצחון ל${S.black || 'שחור'}` : 'תיקו';

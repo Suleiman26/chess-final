@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="robots" content="noindex">
 <title>דף בקרה - גמר השחמט</title>
-<link rel="stylesheet" href="assets/board.css?v=2">
-<link rel="stylesheet" href="assets/theme.css?v=2">
+<link rel="stylesheet" href="assets/board.css?v=3">
+<link rel="stylesheet" href="assets/theme.css?v=3">
 <style>
   body { padding: 14px 18px 30px; }
   .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -62,6 +62,11 @@
   .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
   .check input { width: 18px; height: 18px; accent-color: var(--gold); }
 
+  #palette { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: 10px; }
+  .pal { height: 44px; border-radius: 8px; border: 1px solid var(--line); background: #d9c9a8; color: #111; font-size: 28px; line-height: 1; cursor: pointer; padding: 0; }
+  .pal.black { background: #b79a6e; }
+  .pal.erase { font-size: 14px; font-weight: 700; background: var(--panel-2); color: var(--text); grid-column: span 2; }
+  .pal.on { outline: 3px solid var(--gold); outline-offset: 1px; }
   .clocks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
   .clk { background: #0c0f15; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; text-align: center; }
   .clk small { display: block; color: var(--muted); }
@@ -107,6 +112,20 @@
         <button class="btn" type="button" id="undo">בטל מהלך אחרון</button>
       </form>
       <div id="moves"></div>
+      <div class="row"><button class="btn small" type="button" id="setup-start">סידור פוזיציה (דילוג למצב שעל הלוח)</button></div>
+      <div class="card alert" id="setup-bar" hidden>
+        <h2>סידור פוזיציה</h2>
+        <div style="line-height:1.6">הזיזו את הכלים בחופשיות עד שהלוח זהה ללוח האמיתי. כדי להוסיף כלי: בחרו אותו כאן ואז געו במשבצת. כדי להסיר: בחרו "מחק" וגעו בכלי, או גררו אותו אל מחוץ ללוח. בסיום בחרו של מי התור.</div>
+        <div id="palette" dir="ltr"></div>
+        <div class="row" style="margin-top:8px"><button class="btn small" type="button" id="setup-startpos">מצב התחלתי</button><button class="btn small" type="button" id="setup-empty">לוח ריק</button></div>
+        <div class="row" style="margin-top:10px">
+          <label style="width:110px">מספר המהלך<input type="number" id="setup-no" min="1" step="1"></label>
+          <button class="btn primary" type="button" id="setup-white" style="align-self:end">סיום - תור הלבן</button>
+          <button class="btn primary" type="button" id="setup-black" style="align-self:end">סיום - תור השחור</button>
+          <button class="btn" type="button" id="setup-cancel" style="align-self:end">ביטול</button>
+        </div>
+        <div class="note bad" id="setup-note"></div>
+      </div>
       <div class="row">
         <label style="flex:1; min-width:160px">תוצאה (אם המשחק הסתיים בלי מט)
           <select id="result"><option value="">המשחק נמשך</option><option value="1-0">ניצחון ללבן</option><option value="0-1">ניצחון לשחור</option><option value="½-½">תיקו</option></select>
@@ -189,6 +208,6 @@
     </div>
   </section>
 </div>
-<script src="assets/control.js?v=2"></script>
+<script src="assets/control.js?v=3"></script>
 </body>
 </html>

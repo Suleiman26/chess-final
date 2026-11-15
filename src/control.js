@@ -2,7 +2,7 @@ import { Chess } from 'chess.js';
 import { Chessground } from '@lichess-org/chessground';
 import qrcode from 'qrcode-generator';
 import { Engine } from './engine.js';
-import { rpc, figurine, legalDests, isPromotion, pickPromotion, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHe, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
+import { rpc, moveRows, figurine, legalDests, isPromotion, pickPromotion, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHe, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
 import { PUBLIC_BASE } from './config.js';
 
 const GAME_KEY = 'cf:game';
@@ -24,6 +24,7 @@ function freshGame(prev) {
     autoHideSec: p.autoHideSec ?? 180,
     autoTp: p.autoTp ?? true,
     sans: [],
+    startFen: null,
     clock: { w: baseMin * 60000, b: baseMin * 60000, running: false, ts: 0 },
     armed: { w: true, b: true },
     tp: null,
@@ -44,7 +45,12 @@ function loadGame() {
 let G = loadGame();
 let chess = new Chess();
 function rebuild() {
-  chess = new Chess();
+  try {
+    chess = G.startFen ? new Chess(G.startFen) : new Chess();
+  } catch (e) {
+    G.startFen = null;
+    chess = new Chess();
+  }
   const ok = [];
   for (const s of G.sans) {
     try {
@@ -92,6 +98,7 @@ function publish() {
     check: chess.inCheck(),
     turn: chess.turn(),
     sans: G.sans,
+    startFen: G.startFen || null,
     ev: G.ev,
     clock: G.clock,
     result: autoResult(),
@@ -200,6 +207,7 @@ async function checkKey() {
 const cg = Chessground($('board'), {
   coordinates: true,
   movable: { free: false, color: 'white', showDests: true, events: { after: onBoardMove } },
+  events: { select: (key) => onSelectSquare(key) },
   premovable: { enabled: false },
   draggable: { enabled: true, showGhost: true },
   highlight: { lastMove: true, check: true },
@@ -222,12 +230,14 @@ function syncBoard() {
 }
 
 async function onBoardMove(orig, dest) {
+  if (setupMode) return;
   let promotion;
   if (isPromotion(chess, orig, dest)) promotion = await pickPromotion($('board-box'), chess.turn());
   applyMove({ from: orig, to: dest, promotion });
 }
 
 function applyMove(m) {
+  if (setupMode) return false;
   if (autoResult()) {
     syncBoard();
     return false;
@@ -249,7 +259,7 @@ function applyMove(m) {
 }
 
 function undoMove() {
-  if (!G.sans.length) return;
+  if (setupMode || !G.sans.length) return;
   clockTick();
   chess.undo();
   G.sans.pop();
@@ -268,13 +278,140 @@ function positionChanged() {
 }
 
 function renderMoves() {
-  const out = [];
-  for (let i = 0; i < G.sans.length; i += 2) {
-    out.push(`<span class="mvp"><i>${i / 2 + 1}.</i> ${escapeHtml(figurine(G.sans[i], 'w'))} ${G.sans[i + 1] ? escapeHtml(figurine(G.sans[i + 1], 'b')) : ''}</span>`);
-  }
-  $('moves').innerHTML = out.join(' ') || '<span class="muted">עדיין אין מהלכים</span>';
+  const out = moveRows(G.sans, G.startFen).map(
+    (r) => `<span class="mvp"><i>${r.n}.</i> ${r.w ? escapeHtml(figurine(r.w, 'w')) : '…'} ${r.b ? escapeHtml(figurine(r.b, 'b')) : ''}</span>`,
+  );
+  $('moves').innerHTML = out.join(' ') || `<span class="muted">${G.startFen ? 'ממשיכים מהפוזיציה שסודרה' : 'עדיין אין מהלכים'}</span>`;
   $('moves').scrollTop = $('moves').scrollHeight;
   $('turn').textContent = autoResult() ? 'המשחק הסתיים' : `תור ${sideHe(chess.turn())} · מהלך ${chess.moveNumber()}`;
+}
+
+// ---------- position setup (jump straight to the position on the real board) ----------
+let setupMode = false;
+function setupNote(text) {
+  $('setup-note').textContent = text || '';
+}
+let palettePick = null; // { role, color } | 'erase' | null
+function buildPalette() {
+  const host = $('palette');
+  if (host.childElementCount) return;
+  const items = [
+    ['♔', 'king', 'white'], ['♕', 'queen', 'white'], ['♖', 'rook', 'white'], ['♗', 'bishop', 'white'], ['♘', 'knight', 'white'], ['♙', 'pawn', 'white'],
+    ['♚', 'king', 'black'], ['♛', 'queen', 'black'], ['♜', 'rook', 'black'], ['♝', 'bishop', 'black'], ['♞', 'knight', 'black'], ['♟︎', 'pawn', 'black'],
+  ];
+  const mk = (label, pick, cls) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pal ' + (cls || '');
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      const same = palettePick === pick;
+      palettePick = same ? null : pick;
+      for (const x of host.children) x.classList.remove('on');
+      if (!same) b.classList.add('on');
+    });
+    host.appendChild(b);
+  };
+  for (const [g, role, color] of items) mk(g, { role, color }, color);
+  mk('מחק', 'erase', 'erase');
+}
+function onSelectSquare(key) {
+  if (!setupMode || !palettePick) return;
+  const m = new Map();
+  m.set(key, palettePick === 'erase' ? undefined : { role: palettePick.role, color: palettePick.color });
+  cg.setPieces(m);
+  cg.cancelMove();
+}
+function setupReset(kind) {
+  cg.set({ fen: kind === 'empty' ? '8/8/8/8/8/8/8/8' : 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR', lastMove: undefined });
+}
+function enterSetup() {
+  if (setupMode) return;
+  buildPalette();
+  palettePick = null;
+  for (const x of $('palette').children) x.classList.remove('on');
+  setupMode = true;
+  engine.cancel();
+  clockTick();
+  G.clock.running = false;
+  save();
+  publish();
+  $('setup-bar').hidden = false;
+  $('setup-start').hidden = true;
+  $('setup-no').value = chess.moveNumber();
+  setupNote('');
+  cg.set({
+    autoCastle: false,
+    lastMove: undefined,
+    check: false,
+    movable: { free: true, color: 'both', showDests: false },
+    draggable: { deleteOnDropOff: true },
+  });
+  cg.setAutoShapes([]);
+}
+function exitSetup() {
+  setupMode = false;
+  $('setup-bar').hidden = true;
+  $('setup-start').hidden = false;
+  cg.set({ autoCastle: true, movable: { free: false, showDests: true }, draggable: { deleteOnDropOff: false } });
+}
+function finishSetup(turn) {
+  const placement = cg.getFen();
+  const no = Math.max(1, Math.min(300, parseInt($('setup-no').value, 10) || 1));
+  let c;
+  try {
+    c = new Chess(`${placement} ${turn} - - 0 ${no}`);
+  } catch (e) {
+    setupNote('הפוזיציה לא חוקית: צריך מלך אחד בדיוק לכל צד, ואין רגלים בשורה הראשונה או האחרונה.');
+    return;
+  }
+  try {
+    const opp = new Chess(`${placement} ${turn === 'w' ? 'b' : 'w'} - - 0 ${no}`);
+    if (opp.inCheck()) {
+      setupNote(`הפוזיציה לא אפשרית: המלך של ${turn === 'w' ? 'השחור' : 'הלבן'} בשח בזמן שהתור של הצד השני. בדקו את הכלים או את התור.`);
+      return;
+    }
+  } catch (e) {}
+  for (const color of ['w', 'b']) {
+    const n = { p: 0, n: 0, b: 0, r: 0, q: 0, k: 0 };
+    for (const row of c.board()) for (const pc of row) if (pc && pc.color === color) n[pc.type]++;
+    const total = n.p + n.n + n.b + n.r + n.q + n.k;
+    const extra = Math.max(0, n.q - 1) + Math.max(0, n.r - 2) + Math.max(0, n.b - 2) + Math.max(0, n.n - 2);
+    if (total > 16 || n.p > 8 || extra > 8 - n.p) {
+      setupNote(`יש יותר מדי כלים ל${color === 'w' ? 'לבן' : 'שחור'} (${total} כלים, ${n.p} רגלים). בדקו שלא נשאר כלי שכבר נלקח.`);
+      return;
+    }
+  }
+  const is = (sq, type, color) => {
+    const p = c.get(sq);
+    return !!p && p.type === type && p.color === color;
+  };
+  let rights = '';
+  if (is('e1', 'k', 'w') && is('h1', 'r', 'w')) rights += 'K';
+  if (is('e1', 'k', 'w') && is('a1', 'r', 'w')) rights += 'Q';
+  if (is('e8', 'k', 'b') && is('h8', 'r', 'b')) rights += 'k';
+  if (is('e8', 'k', 'b') && is('a8', 'r', 'b')) rights += 'q';
+  const fen = `${placement} ${turn} ${rights || '-'} - 0 ${no}`;
+  try {
+    new Chess(fen);
+  } catch (e) {
+    setupNote('הפוזיציה לא חוקית.');
+    return;
+  }
+  G.startFen = fen;
+  G.sans = [];
+  G.result = '';
+  G.ev = null;
+  G.settle = true;
+  $('result').value = '';
+  exitSetup();
+  rebuild();
+  positionChanged();
+}
+function cancelSetup() {
+  exitSetup();
+  syncBoard();
+  analyze();
 }
 
 // ---------- clocks ----------
@@ -320,7 +457,7 @@ let waitingManual = false;
 const engine = new Engine('engine/stockfish-19-lite-single.js', (st) => {
   const pill = $('pill-engine');
   pill.className = 'pill ' + (st === 'ready' ? 'ok' : 'bad');
-  pill.textContent = st === 'ready' ? 'המנוע פועל' : 'תקלה במנוע';
+  pill.textContent = st === 'ready' ? 'המנוע פועל' : st === 'restart' ? 'המנוע מופעל מחדש…' : 'תקלה במנוע';
 });
 
 function toWhite(rec, turn) {
@@ -382,6 +519,9 @@ function analyze() {
       $('engine-line').textContent = `עומק ${rec.depth}: ${pvToSan(fen, rec.pv, 5)}`;
       publish();
     },
+    onFail: () => {
+      $('eval-text').textContent = 'המנוע לא הצליח לנתח את הפוזיציה';
+    },
     onDone: (lines) => {
       analysis = { fen, lines, done: true };
       const l1 = lines[1];
@@ -390,6 +530,7 @@ function analyze() {
         renderEval();
         $('engine-line').textContent = `עומק ${l1.depth}: ${pvToSan(fen, l1.pv, 5)}`;
       }
+      if (!l1) $('eval-text').textContent = 'המנוע לא הצליח לנתח את הפוזיציה';
       save();
       publish();
       if (waitingManual) {
@@ -413,6 +554,14 @@ function checkTurningPoint(fen, turn, lines) {
   const adv = moverAdvantage(l1);
   const thr = G.threshold * 100;
   const other = turn === 'w' ? 'b' : 'w';
+  if (G.settle) {
+    // first look at a set-up position: no turning point for an advantage that was already there
+    G.settle = false;
+    G.armed[turn] = adv < thr;
+    G.armed[other] = -adv < thr;
+    save();
+    return;
+  }
   if (adv < thr - 100) G.armed[turn] = true;
   if (-adv < thr - 100) G.armed[other] = true;
   if (G.autoTp && adv >= thr && G.armed[turn] && chess.moves().length > 1) {
@@ -651,6 +800,12 @@ $('san-form').addEventListener('submit', (e) => {
   if (ok) inp.value = '';
 });
 $('undo').addEventListener('click', undoMove);
+$('setup-start').addEventListener('click', enterSetup);
+$('setup-white').addEventListener('click', () => finishSetup('w'));
+$('setup-black').addEventListener('click', () => finishSetup('b'));
+$('setup-cancel').addEventListener('click', cancelSetup);
+$('setup-startpos').addEventListener('click', () => setupReset('start'));
+$('setup-empty').addEventListener('click', () => setupReset('empty'));
 
 $('clock-toggle').addEventListener('click', () => {
   if (G.clock.running) {
@@ -798,7 +953,7 @@ function copyText(btn, text) {
 }
 $('stats-copy').addEventListener('click', () => copyText($('stats-copy'), statsText()));
 $('pgn-copy').addEventListener('click', () => {
-  const c = new Chess();
+  const c = G.startFen ? new Chess(G.startFen) : new Chess();
   c.header('Event', G.title, 'White', G.white, 'Black', G.black, 'Result', autoResult().replace('½-½', '1/2-1/2') || '*');
   for (const s of G.sans) c.move(s);
   copyText($('pgn-copy'), c.pgn());
