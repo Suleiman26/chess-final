@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מסך תצוגה - גמר השחמט</title>
+<link rel="stylesheet" href="assets/board.css">
+<link rel="stylesheet" href="assets/theme.css">
+<style>
+  :root { --B: min(90vh, 52vw); }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    display: flex; align-items: center; justify-content: center; gap: 3.2vh; direction: ltr;
+    background: radial-gradient(120% 90% at 80% 0%, #1a2233 0%, var(--ink) 60%);
+  }
+  .evalbar { position: relative; width: 3.4vh; height: var(--B); background: #23262d; border-radius: .8vh; overflow: hidden; box-shadow: 0 0 0 1px #000; flex: none; }
+  #eval-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 50%; background: #f4f1ea; transition: height .7s cubic-bezier(.3, .8, .3, 1); }
+  .evalbar::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 2px; background: var(--gold); opacity: .8; }
+  .eval-label { position: absolute; left: 0; right: 0; text-align: center; font-weight: 800; font-size: 1.55vh; z-index: 2; font-variant-numeric: tabular-nums; }
+  .eval-label.bottom { bottom: .8vh; color: #1b1e25; }
+  .eval-label.top { top: .8vh; color: #f4f1ea; }
+  .boardwrap { width: var(--B); height: var(--B); flex: none; border-radius: .6vh; overflow: hidden; box-shadow: 0 0 0 1px #000, 0 3vh 8vh rgba(0, 0, 0, .55); }
+  #board { width: 100%; height: 100%; }
+  .cg-wrap coords { font-size: 1.5vh; }
+  .stage { display: flex; gap: 1.4vh; }
+
+  .panel { direction: rtl; width: min(62vh, 36vw); height: var(--B); display: flex; flex-direction: column; gap: 2vh; }
+  #title { font-family: var(--display); font-weight: 700; color: var(--gold); font-size: 3vh; letter-spacing: .02em; text-align: center; padding-bottom: .4vh; border-bottom: 1px solid var(--line); }
+  .card { display: flex; align-items: center; gap: 1.6vh; background: var(--panel); border: .25vh solid var(--line); border-radius: 1.6vh; padding: 1.6vh 2vh; transition: border-color .3s, background .3s; }
+  .card.active { border-color: var(--gold); background: #1d2433; }
+  .dot { flex: none; width: 3vh; height: 3vh; border-radius: 50%; border: .25vh solid #6b768a; }
+  .dot.white { background: #f4f1ea; }
+  .dot.black { background: #101319; }
+  .name { flex: 1; min-width: 0; font-family: var(--display); font-weight: 700; font-size: 4vh; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clock { flex: none; direction: ltr; font-weight: 800; font-size: 5vh; font-variant-numeric: tabular-nums; padding: .4vh 1.6vh; border-radius: 1vh; background: #0c0f15; color: var(--muted); min-width: 15vh; text-align: center; }
+  .card.active .clock { background: var(--gold); color: #1b1405; }
+  .card.active.low .clock { background: var(--red); color: #fff; }
+
+  .mid { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #moves-box { flex: 1; min-height: 0; background: rgba(23, 29, 41, .6); border: 1px solid var(--line); border-radius: 1.6vh; padding: 1.6vh 2.4vh; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+  #moves { direction: ltr; display: flex; flex-direction: column; gap: .5vh; }
+  .mv-row { display: grid; grid-template-columns: 6vh 1fr 1fr; font-size: 3vh; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .mv-row.last { color: var(--text); font-weight: 700; }
+  .mv-n { color: #5d6980; }
+  #moves-empty { color: var(--muted); text-align: center; font-size: 2.4vh; margin: auto; }
+  #result { text-align: center; font-family: var(--display); font-weight: 900; font-size: 4vh; color: var(--gold-soft); padding: 1vh 0; }
+
+  #tp { flex: 1; min-height: 0; border-radius: 1.6vh; border: .35vh solid var(--gold); background: linear-gradient(180deg, rgba(227, 179, 65, .16), rgba(227, 179, 65, .04)); padding: 1.6vh 2vh 1.8vh; display: flex; flex-direction: column; align-items: center; gap: 1.2vh; text-align: center; animation: tpIn .6s both; }
+  @keyframes tpIn { from { opacity: 0; transform: translateY(2vh); } to { opacity: 1; transform: none; } }
+  .tp-head { font-family: var(--display); font-weight: 900; font-size: 4.6vh; color: var(--gold-soft); line-height: 1.1; }
+  .tp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 1.2vh; width: 100%; }
+  #qr { flex: 1; min-height: 0; aspect-ratio: 1; max-width: 100%; background: #fff; border-radius: 1.2vh; padding: .6vh; }
+  #qr svg { width: 100%; height: 100%; display: block; }
+  .tp-find { display: flex; align-items: center; justify-content: center; gap: 1vh; flex-wrap: wrap; font-size: 3vh; font-weight: 700; line-height: 1.25; }
+  .tp-find b { color: var(--gold-soft); font-weight: 800; }
+  .chip { display: inline-block; width: 2.8vh; height: 2.8vh; border-radius: 50%; border: .25vh solid var(--gold); }
+  .chip.white { background: #f4f1ea; }
+  .chip.black { background: #101319; }
+  #tp-stats { display: flex; gap: 3vh; justify-content: center; color: var(--muted); font-size: 2.2vh; }
+  #tp-stats b { color: var(--text); font-size: 2.8vh; }
+
+  #intro { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; pointer-events: none; opacity: 0; direction: rtl; background: radial-gradient(60% 60% at 50% 50%, rgba(14, 18, 25, .93), rgba(14, 18, 25, .82)); }
+  #intro.play { animation: introFade 3.6s both; }
+  #intro .big { font-family: var(--display); font-weight: 900; font-size: 15vh; line-height: 1; color: var(--gold-soft); text-shadow: 0 0 6vh rgba(227, 179, 65, .55); text-align: center; }
+  #intro.play .big { animation: introPop 3.6s both; }
+  #intro .sub { margin-top: 3vh; font-size: 4.5vh; font-weight: 700; text-align: center; color: var(--text); }
+  @keyframes introFade { 0% { opacity: 0; } 8% { opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; } }
+  @keyframes introPop { 0% { transform: scale(.6); } 14% { transform: scale(1.06); } 22% { transform: scale(1); } 100% { transform: scale(1.03); } }
+
+  #waiting { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: var(--ink); direction: rtl; text-align: center; color: var(--muted); font-size: 3vh; line-height: 1.7; }
+  #waiting h2 { font-family: var(--display); color: var(--text); font-size: 6vh; margin: 0 0 1vh; }
+  #fs { position: fixed; top: 1vh; left: 1vh; z-index: 50; opacity: 0; transition: opacity .2s; background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  body:hover #fs { opacity: .8; }
+  :fullscreen #fs { display: none; }
+</style>
+</head>
+<body>
+  <button id="fs" type="button">מסך מלא</button>
+  <div class="stage">
+    <div class="evalbar"><div id="eval-fill"></div><div id="eval-label" class="eval-label bottom"></div></div>
+    <div class="boardwrap"><div id="board"></div></div>
+  </div>
+  <div class="panel">
+    <div id="title"></div>
+    <div class="card" id="card-b"><i class="dot black"></i><div class="name" id="name-b">שחור</div><div class="clock" id="clock-b">0:00</div></div>
+    <div class="mid">
+      <div id="moves-box"><div id="moves-empty">המשחק יתחיל בקרוב</div><div id="moves"></div><div id="result" hidden></div></div>
+      <div id="tp" hidden>
+        <div class="tp-head">נקודת תפנית במשחק!</div>
+        <div class="tp-body">
+          <div id="qr"></div>
+          <div class="tp-find">סרקו ומצאו את המהלך הכי טוב <b id="tp-side"></b><i class="chip" id="tp-chip"></i></div>
+          <div id="tp-stats"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="card-w"><i class="dot white"></i><div class="name" id="name-w">לבן</div><div class="clock" id="clock-w">0:00</div></div>
+  </div>
+  <div id="intro"><div><div class="big">נקודת תפנית<br>במשחק!</div><div class="sub">סרקו את הברקוד ומצאו את המהלך הכי טוב</div></div></div>
+  <div id="waiting"><div><h2>מסך התצוגה מוכן</h2>ממתין לדף הבקרה…<br>פתחו את דף הבקרה באותו דפדפן והתחילו להזין מהלכים.</div></div>
+  <script src="assets/display.js"></script>
+</body>
+</html>

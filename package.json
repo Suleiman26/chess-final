@@ -1,0 +1,19 @@
+{
+  "name": "chess-final",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@lichess-org/chessground": "^10.1.1",
+    "chess.js": "^1.4.0",
+    "esbuild": "^0.28.2",
+    "qrcode-generator": "^2.0.4",
+    "stockfish": "^19.0.1"
+  }
+}

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0e1219">
+<title>נקודת תפנית במשחק</title>
+<link rel="stylesheet" href="assets/board.css">
+<link rel="stylesheet" href="assets/theme.css">
+<style>
+  body { min-height: 100dvh; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 520px; padding: 18px 16px 28px; display: flex; flex-direction: column; }
+  .center { flex: 1; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 30px 10px; line-height: 1.6; }
+  .center h2 { font-family: var(--display); color: var(--text); font-size: 26px; margin: 0 0 8px; }
+  .spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--gold); animation: spin .9s linear infinite; margin: 0 auto 14px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  header { text-align: center; margin-bottom: 14px; }
+  .kicker { color: var(--gold); font-size: 13px; font-weight: 700; letter-spacing: .08em; min-height: 18px; }
+  h1 { font-family: var(--display); font-weight: 900; font-size: clamp(30px, 9vw, 40px); line-height: 1.1; margin: 2px 0 0; }
+
+  .prompt { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .chip { flex: none; width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--gold); }
+  .chip.white { background: #f4f1ea; }
+  .chip.black { background: #14171d; }
+  #prompt-text { font-size: 19px; font-weight: 500; line-height: 1.3; }
+  #prompt-text b { color: var(--gold-soft); font-weight: 800; }
+
+  .tries { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; color: var(--muted); font-size: 14px; min-height: 22px; }
+  #pips { display: flex; gap: 6px; }
+  .pip { width: 14px; height: 14px; border-radius: 50%; background: var(--gold); transition: background .25s, transform .25s; }
+  .pip.used { background: #3a4459; transform: scale(.8); }
+  .pip.win { background: var(--green); }
+
+  #board-box { position: relative; width: 100%; aspect-ratio: 1; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 1px #000, 0 14px 40px rgba(0, 0, 0, .5); }
+  #board { width: 100%; height: 100%; }
+  .shake { animation: shake .45s; }
+  @keyframes shake { 20% { transform: translateX(-9px); } 40% { transform: translateX(8px); } 60% { transform: translateX(-6px); } 80% { transform: translateX(4px); } }
+
+  .msg { margin-top: 14px; min-height: 64px; text-align: center; border-radius: 14px; padding: 12px 14px; }
+  .msg.ok { background: rgba(63, 185, 107, .14); border: 1px solid rgba(63, 185, 107, .55); }
+  .msg.bad { background: rgba(229, 83, 75, .12); border: 1px solid rgba(229, 83, 75, .5); }
+  .msg.warn { background: rgba(240, 161, 58, .12); border: 1px solid rgba(240, 161, 58, .5); }
+  .msg.info { background: var(--panel); border: 1px solid var(--line); }
+  .msg-title { font-family: var(--display); font-weight: 900; font-size: 27px; line-height: 1.2; }
+  .msg.ok .msg-title { color: #7fe0a3; }
+  .msg.bad .msg-title { color: #ff8f88; }
+  .msg.warn .msg-title { color: #ffc77a; }
+  .msg-sub { color: var(--muted); margin-top: 4px; }
+  .msg-hint { color: var(--muted); padding-top: 10px; }
+  .best { margin-top: 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .san { font-size: 30px; font-weight: 800; color: var(--gold-soft); line-height: 1.1; }
+  .san-he { color: var(--text); font-size: 15px; }
+
+  #actions { margin-top: 12px; }
+  .btn { width: 100%; padding: 15px 16px; border-radius: 14px; border: 0; background: var(--gold); color: #1b1405; font-size: 18px; font-weight: 800; cursor: pointer; }
+  .btn:disabled { opacity: .6; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+
+  #players { display: flex; justify-content: center; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin-top: 18px; }
+  #players span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid #6b768a; }
+  .dot.white { background: #f4f1ea; }
+  .dot.black { background: #14171d; }
+
+  #confetti { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 50; }
+  #confetti i { position: absolute; top: -14px; width: 9px; height: 14px; border-radius: 2px; animation: fall linear forwards; }
+  @keyframes fall { to { top: 105%; transform: rotate(720deg) translateX(30px); } }
+  @media (prefers-reduced-motion: reduce) { #confetti { display: none; } .shake { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <section id="v-loading" class="center"><div><div class="spinner"></div>טוען את הפוזיציה…</div></section>
+
+  <section id="v-none" class="center" hidden>
+    <div><h2>אין כאן חידה</h2>סרקו את הברקוד שמופיע על המסך כשמגיעה נקודת תפנית במשחק.</div>
+  </section>
+
+  <section id="v-error" class="center" hidden>
+    <div><h2>בעיית חיבור</h2>לא הצלחנו לטעון את הפוזיציה. בדקו את האינטרנט ונסו שוב.
+      <div style="margin-top:16px"><button id="retry" class="btn" type="button">נסו שוב</button></div></div>
+  </section>
+
+  <section id="v-puzzle" hidden>
+    <header>
+      <div class="kicker" id="kicker"></div>
+      <h1>נקודת תפנית במשחק</h1>
+    </header>
+    <div class="prompt" id="prompt">
+      <div class="chip" id="chip"></div>
+      <div id="prompt-text"></div>
+    </div>
+    <div class="tries"><div id="pips"><div class="pip"></div><div class="pip"></div></div><span id="pips-label"></span></div>
+    <div id="board-box" class="board-ltr"><div id="board"></div></div>
+    <div id="msg" class="msg" role="status" aria-live="polite"></div>
+    <div id="actions"></div>
+    <div id="players"></div>
+  </section>
+</main>
+<div id="confetti"></div>
+<script src="assets/student.js"></script>
+</body>
+</html>

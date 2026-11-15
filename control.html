@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>דף בקרה - גמר השחמט</title>
+<link rel="stylesheet" href="assets/board.css">
+<link rel="stylesheet" href="assets/theme.css">
+<style>
+  body { padding: 14px 18px 30px; }
+  .top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .top h1 { font-family: var(--display); font-size: 24px; margin: 0; margin-inline-end: auto; }
+  .pill { display: inline-block; font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+  .pill.ok { color: #7fe0a3; border-color: rgba(63, 185, 107, .5); }
+  .pill.bad { color: #ff8f88; border-color: rgba(229, 83, 75, .5); }
+  .layout { display: grid; grid-template-columns: minmax(360px, 620px) minmax(340px, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+  .boardrow { display: flex; gap: 10px; direction: ltr; }
+  .evalbar { position: relative; width: 22px; background: #23262d; border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px #000; flex: none; }
+  #eval-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 50%; background: #f4f1ea; transition: height .5s; }
+  .eval-label { position: absolute; left: 0; right: 0; text-align: center; font-size: 10px; font-weight: 800; z-index: 2; }
+  .eval-label.bottom { bottom: 4px; color: #1b1e25; }
+  .eval-label.top { top: 4px; color: #f4f1ea; }
+  #board-box { position: relative; flex: 1; aspect-ratio: 1; border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px #000; }
+  #board { width: 100%; height: 100%; }
+  .under { margin-top: 10px; display: grid; gap: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #turn { font-weight: 700; }
+  #eval-text { color: var(--gold-soft); font-weight: 700; }
+  #engine-line { direction: ltr; text-align: left; color: var(--muted); font-size: 13px; min-height: 18px; }
+  #moves { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; max-height: 92px; overflow: auto; direction: ltr; text-align: left; font-size: 14px; line-height: 1.7; }
+  .mvp { margin-right: 10px; white-space: nowrap; }
+  .mvp i { color: #5d6980; font-style: normal; }
+  .muted { color: var(--muted); }
+
+  .cards { display: grid; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 10px; color: var(--gold); letter-spacing: .02em; }
+  .card.alert { border-color: var(--red); }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  input[type=text], input[type=number], select { background: #0c0f15; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 15px; width: 100%; }
+  input:focus, select:focus { outline: none; border-color: var(--gold); }
+  input.err { border-color: var(--red); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .btn { padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-size: 14px; font-weight: 700; cursor: pointer; }
+  .btn:hover { border-color: var(--gold); }
+  .btn.primary { background: var(--gold); border-color: var(--gold); color: #1b1405; }
+  .btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn.small { padding: 6px 10px; font-size: 13px; }
+  .check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
+  .check input { width: 18px; height: 18px; accent-color: var(--gold); }
+
+  .clocks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .clk { background: #0c0f15; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; text-align: center; }
+  .clk small { display: block; color: var(--muted); }
+  .clk b { font-size: 28px; font-variant-numeric: tabular-nums; direction: ltr; display: block; }
+  .clk b.on { color: var(--gold); }
+
+  #tp-current { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: start; }
+  #tp-qr { background: #fff; border-radius: 8px; padding: 3px; width: 110px; height: 110px; }
+  #tp-qr svg { width: 100%; height: 100%; display: block; }
+  #tp-info { line-height: 1.6; }
+  #tp-link { color: var(--gold-soft); direction: ltr; display: inline-block; font-size: 13px; word-break: break-all; }
+  .note { font-size: 13px; color: var(--muted); min-height: 18px; margin-top: 8px; }
+  .note.ok { color: #7fe0a3; }
+  .note.bad { color: #ff8f88; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 7px 6px; border-bottom: 1px solid var(--line); text-align: center; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  #stats-total { font-weight: 700; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>דף בקרה · גמר השחמט</h1>
+  <span class="pill" id="pill-engine">טוען מנוע…</span>
+  <span class="pill" id="pill-server">מתחבר…</span>
+  <button class="btn primary" id="open-display" type="button">פתח מסך תצוגה</button>
+</div>
+
+<div class="layout">
+  <section>
+    <div class="boardrow">
+      <div class="evalbar"><div id="eval-fill"></div><div id="eval-label" class="eval-label bottom"></div></div>
+      <div id="board-box"><div id="board"></div></div>
+    </div>
+    <div class="under">
+      <div class="row"><span id="turn"></span><span class="muted">·</span><span id="eval-text"></span></div>
+      <div id="engine-line"></div>
+      <form class="row" id="san-form" autocomplete="off">
+        <input type="text" id="san" placeholder="אפשר גם להקליד מהלך: Nf3 או g1f3" dir="ltr" style="flex:1; min-width:180px">
+        <button class="btn" type="submit">בצע</button>
+        <button class="btn" type="button" id="undo">בטל מהלך אחרון</button>
+      </form>
+      <div id="moves"></div>
+      <div class="row">
+        <label style="flex:1; min-width:160px">תוצאה (אם המשחק הסתיים בלי מט)
+          <select id="result"><option value="">המשחק נמשך</option><option value="1-0">ניצחון ללבן</option><option value="0-1">ניצחון לשחור</option><option value="½-½">תיקו</option></select>
+        </label>
+        <button class="btn small" type="button" id="pgn-copy" style="align-self:end">העתק PGN</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="cards">
+    <div class="card alert" id="key-card" hidden>
+      <h2>קוד מנהל</h2>
+      <form class="row" id="key-form"><input type="text" id="key-input" placeholder="הדביקו כאן את קוד המנהל" dir="ltr" style="flex:1"><button class="btn primary" type="submit">שמור</button></form>
+    </div>
+
+    <div class="card">
+      <h2>נקודת תפנית</h2>
+      <div class="row" style="margin-bottom:10px"><span class="pill" id="auto-state"></span><span class="pill" id="tp-vis"></span></div>
+      <div id="tp-empty" class="muted">עדיין לא זוהתה נקודת תפנית במשחק הזה.</div>
+      <div id="tp-current" hidden>
+        <div id="tp-qr"></div>
+        <div><div id="tp-info"></div><a id="tp-link" target="_blank" rel="noopener"></a></div>
+      </div>
+      <div class="note" id="tp-note"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn small" type="button" id="tp-toggle">הסתר מהמסך</button>
+        <button class="btn small" type="button" id="tp-manual">צור נקודת תפנית עכשיו</button>
+        <button class="btn small" type="button" id="tp-retry" hidden>נסה שוב</button>
+        <button class="btn small" type="button" id="tp-delete">מחק נקודת תפנית (נוצרה בטעות)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>נתונים</h2>
+      <table>
+        <thead><tr><th>#</th><th>מהלך · תור</th><th>המהלך הכי טוב</th><th>סרקו</th><th>השתתפו</th><th>הצליחו</th><th>% הצלחה</th></tr></thead>
+        <tbody id="stats-body"></tbody>
+      </table>
+      <div id="stats-total"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn small" type="button" id="stats-refresh">רענן</button>
+        <button class="btn small" type="button" id="stats-copy">העתק נתונים</button>
+        <label class="check"><input type="checkbox" id="stats-all">כל המשחקים</label>
+        <span class="muted" id="stats-time" style="font-size:12px"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>שעונים</h2>
+      <div class="clocks">
+        <div class="clk"><small>לבן</small><b id="clk-w">0:00</b></div>
+        <div class="clk"><small>שחור</small><b id="clk-b">0:00</b></div>
+      </div>
+      <div class="row">
+        <button class="btn primary" type="button" id="clock-toggle">הפעל שעון</button>
+        <label style="width:86px">לבן<input type="text" id="set-w" dir="ltr"></label>
+        <label style="width:86px">שחור<input type="text" id="set-b" dir="ltr"></label>
+        <button class="btn small" type="button" id="clock-set" style="align-self:end">עדכן זמנים</button>
+      </div>
+      <div class="note" id="clock-note">השעון מתחלף אוטומטית בכל מהלך שמוזן. אפשר לתקן את הזמנים לפי השעון הפיזי.</div>
+    </div>
+
+    <div class="card">
+      <h2>הגדרות המשחק</h2>
+      <div style="display:grid; gap:10px">
+        <label>כותרת על המסך<input type="text" id="f-title"></label>
+        <div class="grid2">
+          <label>שם השחקן בלבן<input type="text" id="f-white"></label>
+          <label>שם השחקן בשחור<input type="text" id="f-black"></label>
+        </div>
+        <div class="grid4">
+          <label>דקות לשחקן<input type="number" id="f-base" min="1" step="1"></label>
+          <label>תוספת (שניות)<input type="number" id="f-inc" min="0" step="1"></label>
+          <label>סף סולם<input type="number" id="f-thr" min="1" step="0.5"></label>
+          <label>הסתרת ברקוד (שניות)<input type="number" id="f-hide" min="0" step="10"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="f-auto">להקפיץ נקודת תפנית אוטומטית כשהסולם עובר את הסף</label>
+        <div class="row"><button class="btn" type="button" id="new-game">משחק חדש</button><span class="muted" style="font-size:12px">זמני השעון החדשים נכנסים לתוקף במשחק חדש. הסתרת ברקוד 0 = נשאר עד שמסתירים.</span></div>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="assets/control.js"></script>
+</body>
+</html>
