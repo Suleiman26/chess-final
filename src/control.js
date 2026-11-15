@@ -101,6 +101,52 @@ function publish() {
     localStorage.setItem(STATE_KEY, JSON.stringify(state));
   } catch (e) {}
   if (bc) bc.postMessage(state);
+  queueRemote(state);
+}
+
+// ---------- remote sync (display on another device) ----------
+let remoteBusy = false;
+let remotePending = null;
+let remoteNextAt = 0;
+let remoteTimer = null;
+function setSync(ok) {
+  const pill = $('pill-sync');
+  pill.className = 'pill ' + (ok ? 'ok' : 'bad');
+  pill.textContent = ok ? 'המסך מסונכרן' : 'אין סנכרון למסך';
+}
+function queueRemote(state) {
+  remotePending = state;
+  pumpRemote();
+}
+async function pumpRemote() {
+  if (remoteBusy || !remotePending || !serverOk) return;
+  const wait = remoteNextAt - Date.now();
+  if (wait > 0) {
+    if (!remoteTimer)
+      remoteTimer = setTimeout(() => {
+        remoteTimer = null;
+        pumpRemote();
+      }, wait);
+    return;
+  }
+  const st = remotePending;
+  remotePending = null;
+  remoteBusy = true;
+  let ok = false;
+  try {
+    st.sentAt = Date.now();
+    const r = await rpc('admin_set_live', { p_key: adminKey(), p_state: st });
+    ok = !!(r && r.ok);
+  } catch (e) {}
+  setSync(ok);
+  remoteBusy = false;
+  if (ok) {
+    remoteNextAt = Date.now() + 300;
+  } else {
+    remoteNextAt = Date.now() + 1500;
+    if (!remotePending) remotePending = st;
+  }
+  if (remotePending) pumpRemote();
 }
 
 // ---------- admin key / server ----------
@@ -130,7 +176,10 @@ async function checkKey() {
     pill.className = 'pill ' + (serverOk ? 'ok' : 'bad');
     pill.textContent = serverOk ? 'מחובר לשרת' : 'קוד מנהל שגוי';
     $('key-card').hidden = serverOk;
-    if (serverOk) refreshStats();
+    if (serverOk) {
+      refreshStats();
+      publish();
+    }
   } catch (e) {
     serverOk = false;
     pill.className = 'pill bad';
@@ -791,6 +840,25 @@ setInterval(() => {
   }
   renderClockInputs();
 }, 5000);
+// keep the phone screen awake while operating
+let wakeLock = null;
+async function keepAwake() {
+  try {
+    if ('wakeLock' in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => (wakeLock = null));
+    }
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    keepAwake();
+    publish();
+  }
+});
+document.addEventListener('pointerdown', keepAwake, { once: true });
+keepAwake();
+
 window.addEventListener('beforeunload', () => {
   clockTick();
   save();

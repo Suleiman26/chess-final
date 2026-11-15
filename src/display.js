@@ -1,6 +1,6 @@
 import { Chessground } from '@lichess-org/chessground';
 import qrcode from 'qrcode-generator';
-import { figurine, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
+import { rpc, figurine, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
 
 const $ = (id) => document.getElementById(id);
 const START = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -68,7 +68,7 @@ function renderTp() {
   $('tp-chip').className = 'chip ' + (tp.side === 'w' ? 'white' : 'black');
   const st = tp.stats || {};
   $('tp-stats').innerHTML = `<span><b>${st.participants || 0}</b> משתתפים</span><span><b>${st.solved || 0}</b> הצליחו</span>`;
-  const introKey = tp.id + ':' + (tp.shownAt || 0);
+  const introKey = tp.id + ':' + (tp.shownKey || tp.shownAt || 0);
   if (introKey !== lastIntroKey) {
     lastIntroKey = introKey;
     if (Date.now() - (tp.shownAt || 0) < 8000) {
@@ -120,28 +120,71 @@ function tick() {
   if ($('tp').hidden === vis) renderTp();
 }
 
-function apply(state) {
-  if (!state || (S && state.rev && S.rev && state.rev < S.rev)) return;
+let source = null; // 'local' | 'remote'
+let lastLocalAt = 0;
+let lastRemoteRev = 0;
+
+function applyLocal(state) {
+  if (!state || !state.fen) return;
+  if (S && source === 'local' && state.rev && S.rev && state.rev < S.rev) return;
+  lastLocalAt = Date.now();
+  source = 'local';
   S = state;
   render();
 }
 
+// State that arrived through the server from a control page on another device:
+// re-anchor every timestamp to this device's clock.
+function applyRemote(state, ageMs) {
+  if (!state || !state.fen) return;
+  if (Date.now() - lastLocalAt < 3000) return;
+  lastRemoteRev = state.rev;
+  if (S && state.rev === S.rev) return;
+  if (S && source === 'local' && state.rev < S.rev) return;
+  const sent = state.sentAt || state.rev;
+  const delta = Date.now() - (sent + (ageMs || 0));
+  if (state.clock && state.clock.ts) state.clock.ts += delta;
+  if (state.tp) {
+    state.tp.shownKey = state.tp.shownAt;
+    if (state.tp.shownAt) state.tp.shownAt += delta;
+    if (state.tp.hideAt) state.tp.hideAt += delta;
+  }
+  source = 'remote';
+  S = state;
+  render();
+}
+
+let lastNetOk = Date.now();
+async function poll() {
+  try {
+    const r = await rpc('get_live', { p_rev: lastRemoteRev });
+    lastNetOk = Date.now();
+    if (r && r.state) applyRemote(r.state, Number(r.age_ms) || 0);
+  } catch (e) {}
+  $('net').hidden = Date.now() - lastNetOk < 6000 || Date.now() - lastLocalAt < 6000;
+  setTimeout(poll, 700);
+}
+
 try {
   const raw = localStorage.getItem(STATE_KEY);
-  if (raw) apply(JSON.parse(raw));
+  if (raw) {
+    const st = JSON.parse(raw);
+    if (st && st.rev && Date.now() - st.rev < 30000) applyLocal(st);
+  }
 } catch (e) {}
 window.addEventListener('storage', (e) => {
   if (e.key === STATE_KEY && e.newValue) {
     try {
-      apply(JSON.parse(e.newValue));
+      applyLocal(JSON.parse(e.newValue));
     } catch (err) {}
   }
 });
 try {
   const bc = new BroadcastChannel(CHANNEL);
-  bc.onmessage = (e) => apply(e.data);
+  bc.onmessage = (e) => applyLocal(e.data);
   bc.postMessage({ hello: true });
 } catch (e) {}
+poll();
 setInterval(tick, 200);
 
 $('fs').addEventListener('click', () => {

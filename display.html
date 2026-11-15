@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>מסך תצוגה - גמר השחמט</title>
-<link rel="stylesheet" href="assets/board.css">
-<link rel="stylesheet" href="assets/theme.css">
+<link rel="stylesheet" href="assets/board.css?v=2">
+<link rel="stylesheet" href="assets/theme.css?v=2">
 <style>
   :root { --B: min(90vh, 52vw); }
   html, body { height: 100%; overflow: hidden; }
@@ -71,11 +71,13 @@
   #waiting h2 { font-family: var(--display); color: var(--text); font-size: 6vh; margin: 0 0 1vh; }
   #fs { position: fixed; top: 1vh; left: 1vh; z-index: 50; opacity: 0; transition: opacity .2s; background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
   body:hover #fs { opacity: .8; }
+  #net { position: fixed; bottom: 1vh; left: 50%; transform: translateX(-50%); z-index: 60; direction: rtl; background: var(--red); color: #fff; font-weight: 700; font-size: 2vh; padding: .6vh 2vh; border-radius: 1vh; }
   :fullscreen #fs { display: none; }
 </style>
 </head>
 <body>
   <button id="fs" type="button">מסך מלא</button>
+  <div id="net" hidden>אין חיבור לאינטרנט - המסך לא מתעדכן</div>
   <div class="stage">
     <div class="evalbar"><div id="eval-fill"></div><div id="eval-label" class="eval-label bottom"></div></div>
     <div class="boardwrap"><div id="board"></div></div>
@@ -97,7 +99,7 @@
     <div class="card" id="card-w"><i class="dot white"></i><div class="name" id="name-w">לבן</div><div class="clock" id="clock-w">0:00</div></div>
   </div>
   <div id="intro"><div><div class="big">נקודת תפנית<br>במשחק!</div><div class="sub">סרקו את הברקוד ומצאו את המהלך הכי טוב</div></div></div>
-  <div id="waiting"><div><h2>מסך התצוגה מוכן</h2>ממתין לדף הבקרה…<br>פתחו את דף הבקרה באותו דפדפן והתחילו להזין מהלכים.</div></div>
-  <script src="assets/display.js"></script>
+  <div id="waiting"><div><h2>מסך התצוגה מוכן</h2>ממתין לדף הבקרה…<br>פתחו את דף הבקרה (במחשב הזה או בטלפון) והתחילו להזין מהלכים.</div></div>
+  <script src="assets/display.js?v=2"></script>
 </body>
 </html>
