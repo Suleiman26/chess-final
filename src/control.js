@@ -509,6 +509,7 @@ function renderEval() {
 }
 
 function analyze() {
+  if (postRunning) return;
   const fen = chess.fen();
   const turn = chess.turn();
   analysis = { fen, lines: null, done: false };
@@ -905,6 +906,10 @@ $('new-game').addEventListener('click', () => {
   btn.classList.remove('danger');
   engine.cancel();
   G = freshGame(G);
+  postResult = null;
+  renderPost();
+  postNote('', '');
+  $('post-save').hidden = true;
   rebuild();
   lastTpArgs = null;
   tpNote('', '');
@@ -991,12 +996,373 @@ function copyText(btn, text) {
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => {});
 }
 $('stats-copy').addEventListener('click', () => copyText($('stats-copy'), statsText()));
-$('pgn-copy').addEventListener('click', () => {
+function pgnResult() {
+  return autoResult().replace('½-½', '1/2-1/2') || '*';
+}
+function gameDate() {
+  const d = new Date(parseInt(String(G.gameId).slice(1), 36) || Date.now());
+  const pad = (n) => String(n).padStart(2, '0');
+  return { iso: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, pgn: `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())}` };
+}
+function gamePgn() {
   const c = G.startFen ? new Chess(G.startFen) : new Chess();
-  c.header('Event', G.title, 'White', G.white, 'Black', G.black, 'Result', autoResult().replace('½-½', '1/2-1/2') || '*');
+  c.header('Event', G.title, 'Site', 'חמד״ע', 'Date', gameDate().pgn, 'White', G.white, 'Black', G.black, 'Result', pgnResult());
+  if (G.startFen) c.header('SetUp', '1', 'FEN', G.startFen);
   for (const s of G.sans) c.move(s);
-  copyText($('pgn-copy'), c.pgn());
-});
+  return c.pgn();
+}
+$('pgn-copy').addEventListener('click', () => copyText($('pgn-copy'), gamePgn()));
+
+// ---------- post-game: interesting positions ----------
+let postRunning = false;
+let postStop = false;
+let postResult = null; // { gameId, positions: [...] }
+function analyzeOnce(fen, ms) {
+  return new Promise((resolve) => {
+    engine.analyze({ fen, movetime: ms, onDone: (lines) => resolve(lines), onFail: () => resolve(null) });
+  });
+}
+function postNote(kind, text) {
+  const el = $('post-note');
+  el.className = 'note ' + (kind || '');
+  el.textContent = text || '';
+}
+async function runPostAnalysis() {
+  if (postRunning) {
+    postStop = true;
+    return;
+  }
+  if (!G.sans.length) {
+    postNote('bad', 'אין מהלכים לנתח.');
+    return;
+  }
+  if (engine.failed) {
+    postNote('bad', 'המנוע לא פועל.');
+    return;
+  }
+  postRunning = true;
+  postStop = false;
+  engine.cancel();
+  $('post-run').textContent = 'עצור ניתוח';
+  $('post-list').innerHTML = '';
+  $('post-save').hidden = true;
+  const c = G.startFen ? new Chess(G.startFen) : new Chess();
+  const pos = [{ fen: c.fen(), turn: c.turn() }];
+  for (const s of G.sans) {
+    c.move(s);
+    pos.push({ fen: c.fen(), turn: c.turn(), over: c.isGameOver() });
+  }
+  const ms = 1500;
+  for (let i = 0; i < pos.length; i++) {
+    if (postStop) break;
+    const left = Math.ceil(((pos.length - i) * ms) / 1000);
+    postNote('', `מנתח פוזיציה ${i + 1} מתוך ${pos.length} (עוד כ־${left} שניות)…`);
+    $('post-bar').style.width = Math.round((100 * i) / pos.length) + '%';
+    if (pos[i].over) continue;
+    const cached = analysis.done && analysis.fen === pos[i].fen ? analysis.lines : null;
+    pos[i].lines = cached || (await analyzeOnce(pos[i].fen, ms));
+  }
+  $('post-bar').style.width = '100%';
+  const stopped = postStop;
+  postRunning = false;
+  $('post-run').textContent = 'נתח את המשחק';
+  analyze();
+  if (stopped) {
+    postNote('', 'הניתוח נעצר.');
+    $('post-bar').style.width = '0';
+    return;
+  }
+  const cands = [];
+  for (let i = 1; i < pos.length; i++) {
+    const L = pos[i].lines;
+    const P = pos[i - 1].lines;
+    if (!L || !L[1] || !P || !P[1] || !L[2]) continue;
+    const swing = pawnsMover(L[1]) + pawnsMover(P[1]);
+    const gap = uniqScore(L[1]) - uniqScore(L[2]);
+    cands.push({ ply: i, swing, gap });
+  }
+  let pick = cands.filter((x) => x.swing >= G.threshold && x.gap >= G.uniqGap);
+  let relaxed = false;
+  if (pick.length < 4) {
+    const more = cands.filter((x) => !pick.includes(x) && x.swing >= 1 && x.gap >= 1);
+    more.sort((a, b) => b.swing + b.gap - (a.swing + a.gap));
+    if (more.length) relaxed = true;
+    pick = pick.concat(more.slice(0, 4 - pick.length));
+  }
+  pick.sort((a, b) => b.swing - a.swing);
+  pick = pick.slice(0, 10).sort((a, b) => a.ply - b.ply);
+  const positions = pick.map((x) => {
+    const p = pos[x.ply];
+    const best = p.lines[1];
+    const bestUci = best.pv[0];
+    const played = G.sans[x.ply] || null;
+    const bestSan = uciToSan(p.fen, bestUci);
+    return {
+      ply: x.ply,
+      fen: p.fen,
+      side: p.turn,
+      moveNo: parseInt(p.fen.split(' ')[5], 10) || 0,
+      bestUci,
+      bestSan,
+      line: pvToSan(p.fen, best.pv, 6),
+      accepted: computeAccepted(p.lines),
+      evalCp: best.cp,
+      mate: best.mate,
+      swing: Math.round(x.swing * 10) / 10,
+      gap: Math.round(x.gap * 10) / 10,
+      played,
+      playedBest: played === bestSan,
+      strong: x.swing >= G.threshold && x.gap >= G.uniqGap,
+      puzzleId: null,
+    };
+  });
+  postResult = { gameId: G.gameId, positions };
+  renderPost();
+  if (!positions.length) {
+    postNote('', 'לא נמצאו פוזיציות מעניינות במשחק הזה.');
+  } else {
+    postNote('ok', `נמצאו ${positions.length} פוזיציות${relaxed ? ' (חלקן פחות חדות - מסומנות)' : ''}. המשחק נשמר בשרת.`);
+  }
+  $('post-save').hidden = false;
+  saveGameToServer();
+}
+const miniBoards = [];
+function renderPost() {
+  const host = $('post-list');
+  for (const b of miniBoards.splice(0)) b.destroy();
+  host.innerHTML = '';
+  if (!postResult) return;
+  postResult.positions.forEach((p, idx) => {
+    const item = document.createElement('div');
+    item.className = 'post-item';
+    const label = `${p.moveNo}${p.side === 'b' ? '...' : '.'}`;
+    item.innerHTML = `
+      <div class="post-board board-ltr"><div class="mini"></div></div>
+      <div class="post-text">
+        <div><b>${idx + 1}.</b> מהלך ${p.moveNo} · תור <b>${sideHe(p.side)}</b>${p.strong ? '' : ' <span class="pill">פחות חדה</span>'}</div>
+        <div>המהלך הכי טוב: <b dir="ltr">${escapeHtml(label + ' ' + figurine(p.bestSan, p.side))}</b></div>
+        <div class="muted" dir="ltr" style="text-align:right">${escapeHtml(p.line)}</div>
+        <div>שוחק בפועל: <b dir="ltr">${p.played ? escapeHtml(figurine(p.played, p.side)) : '-'}</b> ${p.played ? (p.playedBest ? '✓' : '✗') : ''}</div>
+        <div class="muted">קפיצה ${p.swing > 0 ? '+' : ''}${p.swing} · פער ${p.gap}</div>
+        <div class="row" style="margin-top:6px">
+          <button class="btn small" type="button" data-act="puzzle">${p.puzzleId ? 'חידה נוצרה' : 'צור חידה'}</button>
+          <button class="btn small" type="button" data-act="fen">העתק FEN</button>
+        </div>
+        <div class="post-puzzle"></div>
+      </div>`;
+    host.appendChild(item);
+    miniBoards.push(
+      Chessground(item.querySelector('.mini'), {
+        fen: p.fen,
+        orientation: p.side === 'w' ? 'white' : 'black',
+        viewOnly: true,
+        coordinates: false,
+        lastMove: undefined,
+        drawable: { enabled: false, visible: true, autoShapes: [{ orig: p.bestUci.slice(0, 2), dest: p.bestUci.slice(2, 4), brush: 'green' }] },
+      }),
+    );
+    const btnP = item.querySelector('[data-act="puzzle"]');
+    const showLink = () => {
+      if (!p.puzzleId) return;
+      const url = publicBase() + '?p=' + p.puzzleId;
+      const qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      item.querySelector('.post-puzzle').innerHTML = `<div class="post-qr">${qr.createSvgTag({ cellSize: 2, margin: 1, scalable: true })}</div><a href="${escapeHtml(url)}" target="_blank" rel="noopener" dir="ltr">${escapeHtml(url)}</a>`;
+      btnP.textContent = 'חידה נוצרה';
+      btnP.disabled = true;
+    };
+    showLink();
+    btnP.addEventListener('click', async () => {
+      if (p.puzzleId) return;
+      btnP.disabled = true;
+      btnP.textContent = 'יוצר…';
+      try {
+        const r = await rpc('admin_create_puzzle', {
+          p_key: adminKey(),
+          p_game: G.gameId,
+          p_white: G.white,
+          p_black: G.black,
+          p_fen: p.fen,
+          p_side: p.side,
+          p_move_no: p.moveNo,
+          p_best_uci: p.bestUci,
+          p_best_san: p.bestSan,
+          p_accepted: p.accepted,
+          p_eval_cp: p.evalCp,
+          p_mate: p.mate,
+        });
+        if (!r || !r.id) throw new Error((r && r.error) || 'server');
+        p.puzzleId = r.id;
+        showLink();
+        refreshStats();
+        saveGameToServer();
+      } catch (e) {
+        btnP.disabled = false;
+        btnP.textContent = 'צור חידה (נסו שוב)';
+      }
+    });
+    item.querySelector('[data-act="fen"]').addEventListener('click', (e) => copyText(e.currentTarget, p.fen));
+  });
+}
+
+function positionsMarkdown() {
+  const lines = [`# ${G.title}`, '', `**${G.white}** (לבן) נגד **${G.black}** (שחור) · ${gameDate().iso} · תוצאה: ${pgnResult()}`, '', '## פוזיציות מעניינות לחידות', ''];
+  const pos = (postResult && postResult.positions) || [];
+  if (!pos.length) lines.push('לא נותחו פוזיציות.');
+  pos.forEach((p, i) => {
+    const url = 'https://lichess.org/analysis/' + p.fen.replace(/ /g, '_');
+    lines.push(`### ${i + 1}. מהלך ${p.moveNo}, תור ${sideHe(p.side)}`);
+    lines.push('');
+    lines.push(`- FEN: \`${p.fen}\``);
+    lines.push(`- המהלך הכי טוב: **${p.bestSan}** (המשך: ${p.line})`);
+    lines.push(`- שוחק בפועל: ${p.played || '-'}${p.played ? (p.playedBest ? ' ✓' : ' ✗') : ''}`);
+    lines.push(`- קפיצה בסולם: ${p.swing}, פער מהמהלך השני: ${p.gap}`);
+    if (p.puzzleId) lines.push(`- חידה לתלמידים: ${publicBase()}?p=${p.puzzleId}`);
+    lines.push(`- [לוח ניתוח ב-Lichess](${url})`);
+    lines.push('');
+  });
+  lines.push('## PGN', '', '```', gamePgn(), '```', '');
+  return lines.join('\n');
+}
+
+async function saveGameToServer() {
+  if (!serverOk) return false;
+  try {
+    const r = await rpc('admin_save_game', {
+      p_key: adminKey(),
+      p_id: G.gameId,
+      p_title: G.title,
+      p_white: G.white,
+      p_black: G.black,
+      p_result: pgnResult(),
+      p_pgn: gamePgn(),
+      p_positions: (postResult && postResult.gameId === G.gameId && postResult.positions) || [],
+    });
+    return !!(r && r.ok);
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---------- GitHub ----------
+const GH_KEY = 'cf:gh';
+function ghConf() {
+  try {
+    return JSON.parse(localStorage.getItem(GH_KEY) || 'null') || {};
+  } catch (e) {
+    return {};
+  }
+}
+function b64utf8(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+async function gh(path, opts) {
+  const conf = ghConf();
+  const res = await fetch('https://api.github.com' + path, {
+    method: (opts && opts.method) || 'GET',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ' + conf.token,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(opts && opts.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: opts && opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {}
+  return { status: res.status, data };
+}
+function ghNote(kind, text) {
+  const el = $('gh-note');
+  el.className = 'note ' + (kind || '');
+  el.textContent = text || '';
+}
+function renderGh() {
+  const conf = ghConf();
+  $('gh-repo').value = conf.repo || 'Suleiman26/chess-final';
+  $('gh-token').value = '';
+  $('gh-token').placeholder = conf.token ? 'מפתח שמור (הדביקו חדש כדי להחליף)' : 'github_pat_…';
+  $('gh-state').textContent = conf.token ? `מחובר ל־${conf.repo}` : 'לא הוגדר';
+  $('gh-state').className = 'pill ' + (conf.token ? 'ok' : '');
+}
+async function ghSaveSettings() {
+  const conf = ghConf();
+  const token = $('gh-token').value.trim() || conf.token;
+  const repo = $('gh-repo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/$/, '');
+  if (!token || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    ghNote('bad', 'חסר מפתח או שם מאגר בצורה משתמש/מאגר.');
+    return;
+  }
+  try {
+    localStorage.setItem(GH_KEY, JSON.stringify({ token, repo }));
+  } catch (e) {}
+  ghNote('', 'בודק…');
+  try {
+    const r = await gh('/repos/' + repo);
+    if (r.status === 200 && r.data && r.data.permissions && r.data.permissions.push) {
+      ghNote('ok', 'החיבור תקין: אפשר לשמור משחקים במאגר.');
+    } else if (r.status === 200) {
+      ghNote('bad', 'המפתח לא מאפשר כתיבה במאגר. צריך הרשאת Contents: Read and write.');
+    } else {
+      ghNote('bad', 'המאגר לא נמצא או שהמפתח שגוי (קוד ' + r.status + ').');
+    }
+  } catch (e) {
+    ghNote('bad', 'אין חיבור ל-GitHub.');
+  }
+  renderGh();
+}
+function slug(s) {
+  return String(s || '')
+    .trim()
+    .replace(/[\\/:*?"<>|#%]+/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 30);
+}
+async function ghPut(repo, path, content, message) {
+  const enc = path.split('/').map(encodeURIComponent).join('/');
+  const cur = await gh(`/repos/${repo}/contents/${enc}`);
+  const body = { message, content: b64utf8(content) };
+  if (cur.status === 200 && cur.data && cur.data.sha) body.sha = cur.data.sha;
+  const r = await gh(`/repos/${repo}/contents/${enc}`, { method: 'PUT', body });
+  if (r.status !== 200 && r.status !== 201) throw new Error('GitHub ' + r.status + (r.data && r.data.message ? ': ' + r.data.message : ''));
+}
+async function saveToGithub() {
+  const conf = ghConf();
+  if (!conf.token) {
+    $('gh-card').open = true;
+    ghNote('bad', 'קודם צריך להגדיר מפתח GitHub (למטה).');
+    return;
+  }
+  const btn = $('post-save');
+  btn.disabled = true;
+  btn.textContent = 'שומר…';
+  await saveGameToServer();
+  const base = `games/${gameDate().iso}_${slug(G.white)}-נגד-${slug(G.black)}_${G.gameId}`;
+  try {
+    await ghPut(conf.repo, base + '.pgn', gamePgn(), `שמירת משחק: ${G.white} נגד ${G.black}`);
+    await ghPut(conf.repo, base + '.md', positionsMarkdown(), `פוזיציות לחידות: ${G.white} נגד ${G.black}`);
+    postNote('ok', `נשמר ב-GitHub: ${conf.repo}/${base}.pgn (+ .md)`);
+    btn.textContent = 'נשמר ב-GitHub ✓';
+    setTimeout(() => {
+      btn.textContent = 'שמור ב-GitHub';
+      btn.disabled = false;
+    }, 4000);
+  } catch (e) {
+    postNote('bad', 'השמירה ב-GitHub נכשלה: ' + e.message + '. המשחק כן נשמר בשרת.');
+    btn.textContent = 'שמור ב-GitHub';
+    btn.disabled = false;
+  }
+}
+$('post-run').addEventListener('click', runPostAnalysis);
+$('post-save').addEventListener('click', saveToGithub);
+$('gh-save').addEventListener('click', ghSaveSettings);
+renderGh();
 
 $('key-form').addEventListener('submit', (e) => {
   e.preventDefault();
