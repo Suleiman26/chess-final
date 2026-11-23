@@ -20,13 +20,15 @@ function freshGame(prev) {
     black: p.black ?? 'שחור',
     baseMin,
     incSec: p.incSec ?? 10,
-    threshold: p.threshold ?? 4,
+    threshold: p.detect === 'swing' ? p.threshold ?? 2 : 2,
+    uniqGap: p.uniqGap ?? 1.5,
+    detect: 'swing',
+    tpFens: [],
     autoHideSec: p.autoHideSec ?? 180,
     autoTp: p.autoTp ?? true,
     sans: [],
     startFen: null,
     clock: { w: baseMin * 60000, b: baseMin * 60000, running: false, ts: 0 },
-    armed: { w: true, b: true },
     tp: null,
     ev: null,
     result: '',
@@ -37,7 +39,15 @@ function loadGame() {
     const raw = localStorage.getItem(GAME_KEY);
     if (raw) {
       const g = JSON.parse(raw);
-      if (g && Array.isArray(g.sans)) return Object.assign(freshGame(g), g);
+      if (g && Array.isArray(g.sans)) {
+        const out = Object.assign(freshGame(g), g);
+        if (g.detect !== 'swing') {
+          out.detect = 'swing';
+          out.threshold = 2;
+        }
+        if (!Array.isArray(out.tpFens)) out.tpFens = [];
+        return out;
+      }
     }
   } catch (e) {}
   return freshGame();
@@ -253,6 +263,7 @@ function applyMove(m) {
   }
   if (G.clock.running) G.clock[mover] += G.incSec * 1000;
   G.sans.push(mv.san);
+  lastAction = 'move';
   if (chess.isGameOver()) G.clock.running = false;
   positionChanged();
   return true;
@@ -263,6 +274,7 @@ function undoMove() {
   clockTick();
   chess.undo();
   G.sans.pop();
+  lastAction = 'undo';
   G.result = '';
   $('result').value = '';
   positionChanged();
@@ -402,7 +414,7 @@ function finishSetup(turn) {
   G.sans = [];
   G.result = '';
   G.ev = null;
-  G.settle = true;
+  lastAction = 'setup';
   $('result').value = '';
   exitSetup();
   rebuild();
@@ -514,6 +526,7 @@ function analyze() {
     movetime: 3000,
     onInfo: (rec) => {
       if (rec.depth < 10) return;
+      if (rec.depth >= 12) rememberEval(fen, turn, rec);
       G.ev = toWhite(rec, turn);
       renderEval();
       $('engine-line').textContent = `עומק ${rec.depth}: ${pvToSan(fen, rec.pv, 5)}`;
@@ -524,6 +537,7 @@ function analyze() {
     },
     onDone: (lines) => {
       analysis = { fen, lines, done: true };
+      if (lines[1]) rememberEval(fen, turn, lines[1]);
       const l1 = lines[1];
       if (l1) {
         G.ev = toWhite(l1, turn);
@@ -544,31 +558,56 @@ function analyze() {
 }
 
 // ---------- turning points ----------
-function moverAdvantage(l1) {
-  if (l1.mate != null) return l1.mate > 0 ? Infinity : -Infinity;
-  return l1.cp;
+// A turning point = the move just played swung the evaluation by at least
+// G.threshold pawns in favour of the side to move (wherever it started, also when
+// the advantage flips sides), and the side to move now has one clearly best move.
+let lastAction = 'load'; // 'move' | 'undo' | 'setup' | 'load'
+const evalCache = new Map(); // fen -> { w: pawns from White's view, clamped to ±10; depth }
+function pawnsMover(rec) {
+  // swing scale: a mate counts as a full 10 pawns, so "winning -> still winning" is no swing
+  if (rec.mate != null) return rec.mate > 0 ? 10 : -10;
+  return Math.max(-10, Math.min(10, rec.cp / 100));
+}
+function uniqScore(rec) {
+  // uniqueness scale: a mate beats any non-mating move clearly
+  if (rec.mate != null) return rec.mate > 0 ? 15 : -15;
+  return Math.max(-10, Math.min(10, rec.cp / 100));
+}
+function rememberEval(fen, turn, rec) {
+  const old = evalCache.get(fen);
+  if (old && old.depth > rec.depth) return;
+  const m = pawnsMover(rec);
+  evalCache.set(fen, { w: turn === 'w' ? m : -m, depth: rec.depth });
+  if (evalCache.size > 400) evalCache.delete(evalCache.keys().next().value);
+}
+function fmtPawns(x) {
+  return (x > 0 ? '+' : '') + x.toFixed(1);
 }
 function checkTurningPoint(fen, turn, lines) {
-  const l1 = lines[1];
-  if (!l1) return;
-  const adv = moverAdvantage(l1);
-  const thr = G.threshold * 100;
-  const other = turn === 'w' ? 'b' : 'w';
-  if (G.settle) {
-    // first look at a set-up position: no turning point for an advantage that was already there
-    G.settle = false;
-    G.armed[turn] = adv < thr;
-    G.armed[other] = -adv < thr;
-    save();
+  const best = lines[1];
+  const second = lines[2];
+  const el = $('tp-last');
+  if (!best || lastAction !== 'move') return;
+  const h = chess.history({ verbose: true });
+  const last = h[h.length - 1];
+  if (!last) return;
+  const prev = evalCache.get(last.before);
+  if (!prev) {
+    el.textContent = 'בדיקה אחרונה: הפוזיציה הקודמת לא נותחה (מהלכים הוזנו מהר מדי)';
     return;
   }
-  if (adv < thr - 100) G.armed[turn] = true;
-  if (-adv < thr - 100) G.armed[other] = true;
-  if (G.autoTp && adv >= thr && G.armed[turn] && chess.moves().length > 1) {
-    G.armed[turn] = false;
-    createTurningPoint(fen, turn, lines, false);
-  }
+  const before = turn === 'w' ? prev.w : -prev.w;
+  const now = pawnsMover(best);
+  const swing = now - before;
+  const gap = second ? uniqScore(best) - uniqScore(second) : 0;
+  const ok = swing >= G.threshold && !!second && gap >= G.uniqGap;
+  el.textContent = `בדיקה אחרונה (${sideHe(turn)} בתור): קפיצה ${fmtPawns(swing)} · פער מהמהלך השני ${second ? gap.toFixed(1) : '-'}${ok ? ' ✓' : ''}`;
+  if (!G.autoTp || !ok) return;
+  if (G.tpFens.includes(fen)) return;
+  G.tpFens.push(fen);
+  if (G.tpFens.length > 200) G.tpFens.shift();
   save();
+  createTurningPoint(fen, turn, lines, false);
 }
 function computeAccepted(lines) {
   const best = lines[1];
@@ -599,7 +638,7 @@ async function createTurningPoint(fen, turn, lines, manual) {
   const key = adminKey();
   lastTpArgs = [fen, turn, lines, manual];
   if (!key) {
-    if (!manual) G.armed[turn] = true;
+    if (!manual) G.tpFens = G.tpFens.filter((f) => f !== fen);
     tpNote('bad', 'לא ניתן ליצור נקודת תפנית בלי קוד מנהל.');
     return;
   }
@@ -647,7 +686,7 @@ async function createTurningPoint(fen, turn, lines, manual) {
     renderTp();
     refreshStats();
   } catch (e) {
-    if (!manual) G.armed[turn] = true;
+    if (!manual) G.tpFens = G.tpFens.filter((f) => f !== fen);
     save();
     tpNote('bad', 'יצירת נקודת התפנית נכשלה (בעיית חיבור?).');
     $('tp-retry').hidden = false;
@@ -664,7 +703,7 @@ function renderTp() {
   $('tp-empty').hidden = !!tp;
   $('tp-current').hidden = !tp;
   $('tp-retry').hidden = !lastTpArgs;
-  $('auto-state').textContent = G.autoTp ? `זיהוי אוטומטי פעיל (סולם ${G.threshold}+)` : 'זיהוי אוטומטי כבוי';
+  $('auto-state').textContent = G.autoTp ? `זיהוי אוטומטי פעיל (קפיצה ${G.threshold}+)` : 'זיהוי אוטומטי כבוי';
   if (!tp) return;
   if (lastTpQr !== tp.id) {
     lastTpQr = tp.id;
@@ -766,7 +805,7 @@ function bindNum(id, field, min, max, after) {
   });
 }
 function fillSettings() {
-  for (const [id, f] of [['f-title', 'title'], ['f-white', 'white'], ['f-black', 'black'], ['f-base', 'baseMin'], ['f-inc', 'incSec'], ['f-thr', 'threshold'], ['f-hide', 'autoHideSec']]) $(id).value = G[f];
+  for (const [id, f] of [['f-title', 'title'], ['f-white', 'white'], ['f-black', 'black'], ['f-base', 'baseMin'], ['f-inc', 'incSec'], ['f-thr', 'threshold'], ['f-gap', 'uniqGap'], ['f-hide', 'autoHideSec']]) $(id).value = G[f];
   $('f-auto').checked = !!G.autoTp;
   $('result').value = G.result || '';
 }
@@ -776,7 +815,8 @@ bindText('f-white', 'white');
 bindText('f-black', 'black');
 bindNum('f-base', 'baseMin', 1, 600);
 bindNum('f-inc', 'incSec', 0, 600);
-bindNum('f-thr', 'threshold', 1, 20, renderTp);
+bindNum('f-thr', 'threshold', 0.5, 20, renderTp);
+bindNum('f-gap', 'uniqGap', 0, 20);
 bindNum('f-hide', 'autoHideSec', 0, 3600);
 $('f-auto').checked = !!G.autoTp;
 $('f-auto').addEventListener('change', () => {
@@ -932,7 +972,6 @@ $('tp-delete').addEventListener('click', async () => {
     return;
   }
   G.tp = null;
-  G.armed[tp.side] = true;
   lastTpQr = null;
   tpNote('', 'נקודת התפנית נמחקה.');
   save();
