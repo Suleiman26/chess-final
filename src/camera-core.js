@@ -259,7 +259,149 @@ export function rankMoves(d, moves) {
 }
 
 // ---------- detector ----------
-// Feed it frames; it reports what it sees and when a move is certain.
+// The detector knows the position (what stands on every square) and uses it:
+// - every square has its own reference picture and its own "still" counter, so a
+//   hand or a shadow over one part of the board does not block a move elsewhere;
+// - shadows are removed by comparing each square with the light change of its
+//   neighbours (a shadow darkens a whole area, a piece changes one square);
+// - a move is accepted only when exactly its squares changed and stayed still,
+//   and the square the piece left now looks like an empty square of its colour.
+const PER = 27; // floats per square in blockMeans (3x3 blocks x RGB)
+const STILL = 8; // per-square motion between frames that still counts as "still"
+
+function sqMeans(img) {
+  const m = new Float32Array(64 * 3);
+  for (let i = 0; i < 64; i++)
+    for (let k = i * PER; k < (i + 1) * PER; k += 3) {
+      m[i * 3] += img[k] / 9;
+      m[i * 3 + 1] += img[k + 1] / 9;
+      m[i * 3 + 2] += img[k + 2] / 9;
+    }
+  return m;
+}
+const NEIGH = Array.from({ length: 64 }, (_, i) => {
+  const r = i >> 3, c = i & 7, out = [];
+  for (let dr = -1; dr <= 1; dr++)
+    for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const rr = r + dr, cc = c + dc;
+      if (rr >= 0 && rr < 8 && cc >= 0 && cc < 8) out.push(rr * 8 + cc);
+    }
+  return out;
+});
+const median = (xs) => {
+  const s = xs.slice().sort((a, b) => a - b);
+  return s.length % 2 ? s[s.length >> 1] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+};
+
+// change per square, with shadows and exposure removed. The light change is
+// estimated per block (a third of a square) from the blocks of the neighbouring
+// squares around it, so the soft edge of a shadow is followed too. A piece that
+// arrives or leaves changes only its own square, so it is not "explained away".
+const BG = 24; // blocks per board side
+const WIN = 3; // neighbourhood radius in blocks
+export function changeMap(cur, ref) {
+  const lum = (img, k) => img[k] + img[k + 1] + img[k + 2];
+  const ratio = new Float32Array(BG * BG);
+  const owner = new Int8Array(BG * BG);
+  for (let i = 0; i < 64; i++)
+    for (let b = 0; b < 9; b++) {
+      const gy = (i >> 3) * 3 + Math.floor(b / 3);
+      const gx = (i & 7) * 3 + (b % 3);
+      const k = i * PER + b * 3;
+      ratio[gy * BG + gx] = (lum(cur, k) + 12) / (lum(ref, k) + 12);
+      owner[gy * BG + gx] = i;
+    }
+  const glob = median(Array.from(ratio));
+  const d = new Float32Array(64);
+  const vals = [];
+  for (let i = 0; i < 64; i++) {
+    let a = 0, g = 0;
+    for (let b = 0; b < 9; b++) {
+      const gy = (i >> 3) * 3 + Math.floor(b / 3);
+      const gx = (i & 7) * 3 + (b % 3);
+      vals.length = 0;
+      for (let y = Math.max(0, gy - WIN); y <= Math.min(BG - 1, gy + WIN); y++)
+        for (let x = Math.max(0, gx - WIN); x <= Math.min(BG - 1, gx + WIN); x++) if (owner[y * BG + x] !== i) vals.push(ratio[y * BG + x]);
+      const loc = median(vals);
+      const k = i * PER + b * 3;
+      for (let c = 0; c < 3; c++) {
+        a += Math.abs(cur[k + c] - ref[k + c] * loc);
+        g += Math.abs(cur[k + c] - ref[k + c] * glob);
+      }
+    }
+    d[i] = Math.min(a, g) / PER;
+  }
+  return d;
+}
+
+// How different a square is once a smooth change of light across it is removed
+// (a plane fitted to the brightness ratio of its 3x3 blocks). A shadow, even its
+// soft edge, leaves almost nothing; a piece arriving or leaving changes the
+// pattern or the colour inside the square and leaves a lot.
+export function shadowResidual(cur, ref, i) {
+  const r = [];
+  for (let b = 0; b < 9; b++) {
+    const k = i * PER + b * 3;
+    r.push((cur[k] + cur[k + 1] + cur[k + 2] + 12) / (ref[k] + ref[k + 1] + ref[k + 2] + 12));
+  }
+  // least squares plane over x,y in {-1,0,1}
+  let a = 0, bx = 0, by = 0;
+  for (let b = 0; b < 9; b++) {
+    const x = (b % 3) - 1, y = Math.floor(b / 3) - 1;
+    a += r[b] / 9;
+    bx += (r[b] * x) / 6;
+    by += (r[b] * y) / 6;
+  }
+  let sum = 0;
+  for (let b = 0; b < 9; b++) {
+    const x = (b % 3) - 1, y = Math.floor(b / 3) - 1;
+    const f = a + bx * x + by * y;
+    const k = i * PER + b * 3;
+    for (let c = 0; c < 3; c++) sum += Math.abs(cur[k + c] - ref[k + c] * f);
+  }
+  return sum / PER;
+}
+
+// colour and texture of a square, which do not depend much on light: texture is
+// what remains of the brightness pattern after removing a smooth slope across the
+// square, so the soft edge of a shadow does not look like a piece
+function feature(img, i) {
+  let R = 0, G = 0, Bl = 0;
+  const L = [];
+  for (let k = i * PER; k < (i + 1) * PER; k += 3) {
+    R += img[k];
+    G += img[k + 1];
+    Bl += img[k + 2];
+    L.push(img[k] + img[k + 1] + img[k + 2]);
+  }
+  const I = R + G + Bl + 1;
+  let a = 0, bx = 0, by = 0;
+  for (let b = 0; b < 9; b++) {
+    a += L[b] / 9;
+    bx += (L[b] * ((b % 3) - 1)) / 6;
+    by += (L[b] * (Math.floor(b / 3) - 1)) / 6;
+  }
+  let res = 0;
+  for (let b = 0; b < 9; b++) res += (L[b] - (a + bx * ((b % 3) - 1) + by * (Math.floor(b / 3) - 1))) ** 2;
+  return [R / I, G / I, Math.sqrt(res / 9) / (a + 1)];
+}
+function emptyDistance(img, i, empties) {
+  const f = feature(img, i);
+  const r = i >> 3, c = i & 7;
+  const same = empties
+    .filter((j) => j !== i && (((j >> 3) + (j & 7)) & 1) === ((r + c) & 1))
+    .sort((a, b) => Math.hypot((a >> 3) - r, (a & 7) - c) - Math.hypot((b >> 3) - r, (b & 7) - c))
+    .slice(0, 4);
+  if (!same.length) return null;
+  let best = Infinity;
+  for (const j of same) {
+    const g = feature(img, j);
+    best = Math.min(best, Math.abs(f[0] - g[0]) * 100 + Math.abs(f[1] - g[1]) * 100 + Math.abs(f[2] - g[2]) * 20);
+  }
+  return best;
+}
+
 export class Detector {
   constructor() {
     this.map = null;
@@ -269,12 +411,12 @@ export class Detector {
     this.prev = null;
     this.ref = null;
     this.cur = null;
-    this.stable = 0;
+    this.still = new Int16Array(64);
+    this.age = new Int16Array(64);
     this.pending = null;
     this.pendingCount = 0;
     this.stuck = 0;
     this.reanchorWanted = true;
-    this.lastDiff = null;
   }
   // corners: a1,h1,h8,a8 in frame pixels; w,h: frame size
   setCalibration(corners, w, h) {
@@ -295,7 +437,7 @@ export class Detector {
     const cost = (map) => {
       const d = Array.from(squareDiffs(blockMeans(warp(frame.data, map)), this.ref)).sort((a, b) => a - b);
       let s = 0;
-      for (let i = 0; i < 56; i++) s += d[i]; // ignore the few squares a move may have changed
+      for (let i = 0; i < 56; i++) s += d[i];
       return s;
     };
     const base = cost(this.map);
@@ -315,7 +457,7 @@ export class Detector {
       this.shift = [best.dx, best.dy];
       this.map = this.shiftedMap(best.dx, best.dy);
       this.prev = null;
-      this.stable = 0;
+      this.still.fill(0);
       return true;
     }
     return false;
@@ -325,16 +467,24 @@ export class Detector {
     this.pending = null;
     this.stuck = 0;
   }
-  // accept the latest stable picture as the reference (after a move was applied)
-  commit() {
-    if (this.cur) this.ref = this.cur.slice();
+  // A move was entered: the squares it touched get their new reference picture.
+  // Without a move, the whole board is taken as the reference.
+  commit(move) {
+    if (this.cur && this.ref && move) {
+      // the move's squares, and the still squares next to them (a tall piece that
+      // moved also changes how its neighbours look)
+      const upd = new Set(moveSquares(move));
+      for (const i of [...upd]) for (const j of NEIGH[i]) if (this.still[j] >= 3) upd.add(j);
+      for (const i of upd) this.ref.set(this.cur.subarray(i * PER, (i + 1) * PER), i * PER);
+    } else if (this.cur) this.ref = this.cur.slice();
     this.pending = null;
     this.pendingCount = 0;
     this.stuck = 0;
     this.reanchorWanted = false;
   }
   // frame: { data, width, height } with RGBA data; moves: chess.js verbose legal moves
-  feed(frame, moves) {
+  // board: chess.js board() of the position before the move (optional; improves checks)
+  feed(frame, moves, board) {
     if (!this.map) return { state: 'nocal' };
     this.buf = warp(frame.data, this.map, this.buf);
     const img = blockMeans(this.buf);
@@ -342,50 +492,167 @@ export class Detector {
     this.prev = img;
     if (!prev) return { state: 'motion' };
     const md = squareDiffs(img, prev);
-    let motion = 0;
-    for (let i = 0; i < 64; i++) motion = Math.max(motion, md[i]);
-    if (motion > 12) {
-      this.stable = 0;
-      this.pendingCount = 0;
-      return { state: 'motion' };
+    let moving = 0;
+    for (let i = 0; i < 64; i++) {
+      this.still[i] = md[i] < STILL ? Math.min(this.still[i] + 1, 999) : 0;
+      if (this.still[i] < 3) moving++;
     }
-    this.stable++;
     this.cur = img;
-    if (this.stable < 3) return { state: 'settling' };
     if (this.reanchorWanted || !this.ref) {
+      if (moving) return { state: 'motion' };
       this.commit();
       return { state: 'anchored' };
     }
-    const d = squareDiffs(img, this.ref);
-    this.lastDiff = d;
-    const { T, ranked, changed } = rankMoves(d, moves);
+    const d = changeMap(img, this.ref);
+    const T = threshold(d);
+    const settled = (i) => this.still[i] >= 3;
     const changedList = [];
-    for (let i = 0; i < 64; i++) if (d[i] > T) changedList.push(i);
-    if (changed === 0) {
-      // nothing moved: follow slow light changes
-      this.ref = img.slice();
-      this.pending = null;
-      this.stuck = 0;
-      return { state: 'idle', changed: changedList };
+    for (let i = 0; i < 64; i++) {
+      if (d[i] > T) changedList.push(i);
+      else if (settled(i) && d[i] < T * 0.5) {
+        // follow slow light changes on quiet squares
+        for (let k = i * PER; k < (i + 1) * PER; k++) this.ref[k] = this.ref[k] * 0.8 + img[k] * 0.2;
+      }
     }
-    const best = ranked[0];
-    const second = ranked[1];
-    const clear = best && best.ok && (!second || !second.ok || best.score > second.score * 1.5);
-    if (clear) {
+    let maxD = 0;
+    for (let i = 0; i < 64; i++) maxD = Math.max(maxD, d[i]);
+    if (maxD <= T * 0.6) {
+      this.pending = null;
+      this.pendingCount = 0;
       this.stuck = 0;
+      const out = { state: moving > 3 ? 'motion' : 'idle', changed: changedList };
+      if (this.debug) out.debug = { T, max: Array.from(d).map((v, i) => [sqName(i), v]).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, v]) => n + ':' + v.toFixed(0)) };
+      return out;
+    }
+
+    // empty squares we can see right now, for the "does it look empty" check
+    const emptyNow = [];
+    if (board) for (let i = 0; i < 64; i++) if (!board[i >> 3][i & 7] && settled(i) && d[i] < T) emptyNow.push(i);
+
+    // what we know stood on each square, and whether it still looks that way:
+    // flip > 0 means "had a piece, now looks empty" or "was empty, now has a piece"
+    const flip = new Float32Array(64);
+    if (board && emptyNow.length >= 4)
+      for (let i = 0; i < 64; i++) {
+        if (d[i] <= T * 0.3) continue;
+        const now = emptyDistance(img, i, emptyNow);
+        const before = emptyDistance(this.ref, i, emptyNow);
+        if (now == null || before == null) continue;
+        const e = (before - now) / (before + now + 1); // > 0: looks emptier than before
+        flip[i] = board[i >> 3][i & 7] ? e : -e;
+      }
+    const vacated = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) if (board && board[i >> 3][i & 7] && flip[i] > 0.35) vacated[i] = 1;
+    // changed squares that only got darker or lighter (shadow, light), and whose
+    // occupancy did not change
+    const shadowy = new Uint8Array(64);
+    for (const i of changedList) if (flip[i] < 0.35 && shadowResidual(img, this.ref, i) < T * 0.5) shadowy[i] = 1;
+
+    const seen = new Set();
+    const ranked = [];
+    for (const m of moves) {
+      const key = m.from + m.to;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const sq = moveSquares(m);
+      const inS = new Set(sq);
+      let inside = Infinity;
+      let still = true;
+      for (const i of sq) {
+        inside = Math.min(inside, d[i]);
+        if (!settled(i) || shadowy[i]) still = false;
+      }
+      let shade = false;
+      let peak = 0;
+      for (const i of sq) {
+        if (shadowy[i]) shade = true;
+        peak = Math.max(peak, d[i]);
+      }
+      if (inside <= T * 0.3 || peak <= T) continue;
+      // changes the move does not explain (a tall piece may spill onto a neighbour)
+      let far = 0;
+      let nearSum = 0;
+      let blocking = 0;
+      for (const i of changedList) {
+        if (inS.has(i) || !settled(i) || shadowy[i]) continue;
+        // a square whose piece is gone is never "spill": some move took that piece away
+        const near = NEIGH[i].some((j) => inS.has(j)) && !vacated[i];
+        if (near) nearSum += d[i] * 0.6;
+        else far += d[i] + (vacated[i] ? T : 0);
+        if (!(near && d[i] < 0.85 * inside) && d[i] > 0.45 * inside) blocking++;
+      }
+      // what we know stood on the squares: every square the move empties must now
+      // look empty, and the square it goes to must look occupied
+      let evidence = 0;
+      if (board && emptyNow.length >= 4) {
+        const left = [m.from];
+        if (m.flags.includes('e')) left.push(m.to[0] + m.from[1]);
+        if (m.flags.includes('k')) left.push('h' + m.from[1]);
+        if (m.flags.includes('q')) left.push('a' + m.from[1]);
+        const ev = left.map((x) => flip[sqIndex(x)]);
+        if (!m.captured) ev.push(flip[sqIndex(m.to)]);
+        evidence = Math.min(...ev);
+      }
+      // a weaker change is enough when the position confirms the move
+      const ready = still && !shade && (inside > T || (inside > T * 0.6 && evidence > 0.3) || evidence > 0.6);
+      const promo = m.promotion ? moves.find((x) => x.from === m.from && x.to === m.to && x.promotion === 'q') || m : m;
+      const unexplained = far + nearSum;
+      ranked.push({ move: promo, inside, ready, still, shade, spill: unexplained, blocking, evidence, score: Math.min(inside, 3 * T) + 0.4 * T * evidence - 0.8 * unexplained });
+    }
+    ranked.sort((a, b) => b.score - a.score);
+    const ready = ranked.filter((r) => r.ready);
+    // A square that has looked changed for a while, but whose occupancy still
+    // matches the known position (the piece is still there, or it is still empty),
+    // only changed in looks (spill of a tall piece, light): take it as reference.
+    // A square whose piece really left is never absorbed.
+    if (board && emptyNow.length >= 4) {
+      const inMove = new Set();
+      for (const r of ready) for (const i of moveSquares(r.move)) inMove.add(i);
+      for (let i = 0; i < 64; i++) {
+        if (d[i] > T && settled(i) && flip[i] < 0.2 && !inMove.has(i)) {
+          if (++this.age[i] >= 15) {
+            this.ref.set(img.subarray(i * PER, (i + 1) * PER), i * PER);
+            this.age[i] = 0;
+          }
+        } else this.age[i] = 0;
+      }
+    }
+    const best = ready[0];
+    const rival = ranked.find((r) => r !== best && !r.shade);
+    let accept = false;
+    const known = board && emptyNow.length >= 4;
+    if (best && best.evidence > (known ? 0.3 : -1) && (!rival || best.score - rival.score > 0.25 * T)) {
+      if (!best.blocking) accept = true;
+      // someone keeps a hand or arm still over another part of the board:
+      // after a while, accept a move that is clear and that the position confirms
+      else if (this.stuck >= 5 && best.evidence > 0.3) accept = true;
+    }
+    if (accept) {
       const key = best.move.from + best.move.to;
+      // a different move than the one being confirmed starts the count again;
+      // a frame or two of doubt in between does not
       if (this.pending === key) this.pendingCount++;
       else {
         this.pending = key;
         this.pendingCount = 1;
       }
-      if (this.pendingCount >= 2) return { state: 'move', move: best.move, changed: changedList };
+      if (this.pendingCount >= 2) {
+        const out = { state: 'move', move: best.move, changed: changedList };
+        if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~') + (shadowy[i] ? 's' : '') + (vacated[i] ? 'v' : '')), flip: changedList.map((i) => sqName(i) + ':' + flip[i].toFixed(2)), top: ranked.slice(0, 4).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`), stuck: this.stuck };
+        return out;
+      }
       return { state: 'confirming', move: best.move, changed: changedList };
     }
-    this.pending = null;
+    let settledChanged = 0;
+    for (const i of changedList) if (settled(i) && !shadowy[i]) settledChanged++;
+    if (!settledChanged) return { state: 'motion', changed: changedList };
     this.stuck++;
-    if (changed >= 5 && this.stuck % 5 === 1 && this.realign(frame)) return { state: 'realigned' };
-    const candidates = ranked.filter((r) => r.inside > T * 0.6).slice(0, 3).map((r) => r.move);
-    return { state: changed > 12 ? 'shifted' : 'unclear', changed: changedList, candidates, stuck: this.stuck };
+    if (settledChanged >= 10 && this.stuck % 5 === 1 && this.realign(frame)) return { state: 'realigned' };
+    const candidates = ranked.slice(0, 3).map((r) => r.move);
+    // is there a move the position supports (a piece's square now looks empty)?
+    const plausible = !known || ranked.some((r) => !r.shade && r.evidence > 0.3);
+    const out = { state: settledChanged >= 12 ? 'shifted' : 'unclear', changed: changedList, candidates, stuck: this.stuck, plausible };
+    if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~')), top: ranked.slice(0, 3).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} st=${r.still} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`) };
+    return out;
   }
 }

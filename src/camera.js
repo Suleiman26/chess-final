@@ -207,7 +207,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     const ok = applyMove({ from: m.from, to: m.to, promotion: promo });
     fromCamera = false;
     if (!ok) return false;
-    det.commit();
+    det.commit(m);
     els.cands.innerHTML = '';
     highlight = { squares: [m.from, m.to], kind: 'move', until: Date.now() + 2500 };
     lastMoveText = moveLabel(m);
@@ -266,7 +266,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     }
     const frame = grab();
     if (!frame) return;
-    const res = det.feed(frame, chess.moves({ verbose: true }));
+    const res = det.feed(frame, chess.moves({ verbose: true }), chess.board());
     const side = sideHe(chess.turn());
     const recent = lastMoveText && Date.now() - lastMoveAt < 3000 ? `<span class="cam-last">✓ ${lastMoveText}</span> ` : '';
     switch (res.state) {
@@ -293,10 +293,15 @@ export function initCamera({ getChess, applyMove, canDetect }) {
         highlight = { squares: res.changed.map(sqName), kind: 'changed', until: Date.now() + TICK_MS * 2 };
         if (res.state === 'shifted' && res.stuck > 6) {
           status('הרבה משבצות השתנו בבת אחת: אולי הטלפון זז או שהתאורה השתנתה. אם הרשת לא יושבת על הלוח, לחצו "כייל מחדש".', 'bad');
+          if (res.stuck > 6) showCandidates(res.candidates || []);
+        } else if (!res.plausible && res.stuck < 40) {
+          // a hand, an arm or an object over part of the board, and no piece is missing
+          clearCandidates();
+          status(recent + 'יש יד או חפץ מעל חלק מהלוח. מחכה שיתפנה…', 'info');
         } else if (res.stuck > 6) {
           status('משהו השתנה על הלוח אבל לא זיהיתי מהלך ברור. בחרו את המהלך שנעשה, או הזינו אותו ידנית.', 'bad');
+          showCandidates(res.candidates || []);
         } else status('בודק את השינוי על הלוח…', 'info');
-        if (res.stuck > 6) showCandidates(res.candidates || []);
         break;
       }
     }
