@@ -4,6 +4,7 @@ import qrcode from 'qrcode-generator';
 import { Engine } from './engine.js';
 import { rpc, moveRows, figurine, legalDests, isPromotion, pickPromotion, fmtClock, evalToPercent, evalLabel, evalAdvantage, sideHe, sideHeTo, escapeHtml, STATE_KEY, CHANNEL } from './common.js';
 import { PUBLIC_BASE } from './config.js';
+import { initCamera } from './camera.js';
 
 const GAME_KEY = 'cf:game';
 const ADMIN_KEY = 'cf:admin';
@@ -280,7 +281,9 @@ function undoMove() {
   positionChanged();
 }
 
+let camera = null;
 function positionChanged() {
+  if (camera) camera.positionChanged();
   save();
   syncBoard();
   renderMoves();
@@ -1377,6 +1380,11 @@ $('key-form').addEventListener('submit', (e) => {
 // ---------- start ----------
 fillSettings();
 syncBoard();
+camera = initCamera({
+  getChess: () => chess,
+  applyMove: (m) => applyMove(m),
+  canDetect: () => !setupMode && !autoResult(),
+});
 renderMoves();
 renderClocks();
 renderClockInputs();
