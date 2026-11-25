@@ -107,6 +107,12 @@
   .cam-status.ok { border-color: rgba(63, 185, 107, .6); }
   .cam-status.bad { border-color: rgba(229, 83, 75, .6); color: #ffb3ad; }
   .cam-last { font-size: 20px; font-weight: 800; color: #7fe0a3; direction: ltr; display: inline-block; margin-inline-end: 6px; }
+  .cam-zoom { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 14px; font-weight: 700; }
+  .cam-zoom-label { flex: none; }
+  .cam-zoom-ctl { display: flex; align-items: center; gap: 8px; flex: 1; }
+  .cam-zoom-ctl input { flex: 1; accent-color: var(--gold, #e3b341); }
+  #cam-zoom-val { direction: ltr; unicode-bidi: isolate; min-width: 3.2em; text-align: center; font-variant-numeric: tabular-nums; }
+  #cam-video { transform-origin: 50% 50%; }
 </style>
 </head>
 <body>
@@ -171,6 +177,15 @@
       <div id="cam-live" hidden>
         <div class="cam-rec"><span class="cam-dot"></span>המצלמה פועלת · הווידאו נשאר בטלפון הזה, לא נשמר ולא נשלח</div>
         <div id="cam-view"><video id="cam-video" playsinline muted autoplay></video><canvas id="cam-overlay"></canvas></div>
+        <div class="cam-zoom" id="cam-zoom-row">
+          <span class="cam-zoom-label">זום<span id="cam-zoom-kind"></span></span>
+          <div class="cam-zoom-ctl" dir="ltr">
+            <button class="btn small" type="button" id="cam-zoom-out" aria-label="הקטן זום">−</button>
+            <input type="range" id="cam-zoom" min="1" max="3" step="0.1" value="1" aria-label="זום">
+            <button class="btn small" type="button" id="cam-zoom-in" aria-label="הגדל זום">+</button>
+            <span id="cam-zoom-val">1.0×</span>
+          </div>
+        </div>
         <div id="cam-status" class="cam-status"></div>
         <div class="row" id="cam-cands" style="margin-top:8px"></div>
         <div class="row" id="cam-cal-actions" style="margin-top:8px" hidden>
@@ -279,6 +294,6 @@
     </div>
   </section>
 </div>
-<script src="assets/control.js?v=7"></script>
+<script src="assets/control.js?v=8"></script>
 </body>
 </html>

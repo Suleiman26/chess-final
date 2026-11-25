@@ -20,6 +20,10 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     calActions: $('cam-cal-actions'),
     runActions: $('cam-run-actions'),
     note: $('cam-note'),
+    zoom: $('cam-zoom'),
+    zoomRow: $('cam-zoom-row'),
+    zoomVal: $('cam-zoom-val'),
+    zoomKind: $('cam-zoom-kind'),
   };
   const proc = document.createElement('canvas');
   const pctx = proc.getContext('2d', { willReadFrequently: true });
@@ -34,6 +38,10 @@ export function initCamera({ getChess, applyMove, canDetect }) {
   let highlight = { squares: [], kind: '', until: 0 };
   let lastMoveText = '';
   let lastMoveAt = 0;
+  // zoom: the camera's own zoom when the phone offers it, otherwise a digital zoom
+  // (the centre of the picture is cropped, for the preview and for recognition alike)
+  let zoom = 1;
+  let hwZoom = null; // { min, max, step } when the camera supports zoom
 
   function loadCal() {
     try {
@@ -44,7 +52,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
   }
   function saveCal() {
     try {
-      localStorage.setItem(CAL_KEY, JSON.stringify({ taps, rot }));
+      localStorage.setItem(CAL_KEY, JSON.stringify({ taps, rot, zoom }));
     } catch (e) {}
   }
 
@@ -67,7 +75,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
       });
     } catch (e) {
       stream = null;
@@ -89,7 +97,9 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     proc.height = Math.round(vh * scale);
     els.idle.hidden = true;
     els.live.hidden = false;
+    setupZoom();
     const saved = loadCal();
+    await applyZoom(saved && saved.zoom ? saved.zoom : 1);
     if (saved) {
       taps = saved.taps;
       rot = saved.rot || 0;
@@ -114,15 +124,69 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     note('', 'המצלמה כבויה.');
   }
 
+  // ---------- zoom ----------
+  function setupZoom() {
+    hwZoom = null;
+    const track = stream && stream.getVideoTracks()[0];
+    try {
+      const caps = track && track.getCapabilities ? track.getCapabilities() : null;
+      if (caps && caps.zoom && caps.zoom.max > caps.zoom.min) hwZoom = { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1 };
+    } catch (e) {}
+    const z = els.zoom;
+    if (hwZoom) {
+      z.min = hwZoom.min;
+      z.max = Math.min(hwZoom.max, hwZoom.min * 8);
+      z.step = hwZoom.step;
+    } else {
+      z.min = 1;
+      z.max = 3;
+      z.step = 0.1;
+    }
+    els.zoomKind.textContent = hwZoom ? '' : ' (דיגיטלי)';
+  }
+
+  async function applyZoom(v) {
+    const z = els.zoom;
+    v = Math.min(+z.max, Math.max(+z.min, +v || 1));
+    zoom = v;
+    z.value = v;
+    els.zoomVal.textContent = (hwZoom ? v / hwZoom.min : v).toFixed(1) + '×';
+    if (hwZoom) {
+      els.video.style.transform = '';
+      try {
+        await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ zoom: v }] });
+      } catch (e) {}
+    } else els.video.style.transform = v > 1 ? `scale(${v})` : '';
+  }
+
+  // the zoom changes where the board is in the picture, so the corners are marked again
+  async function changeZoom(v) {
+    if (phase === 'run') return;
+    await applyZoom(v);
+    if (taps.length) {
+      enterTap();
+      note('', 'הזום השתנה, לכן צריך לסמן שוב את 4 הפינות.');
+    }
+    saveCal();
+    draw();
+  }
+
   function grab() {
     if (!stream || els.video.readyState < 2) return null;
-    pctx.drawImage(els.video, 0, 0, proc.width, proc.height);
+    if (!hwZoom && zoom > 1) {
+      const vw = els.video.videoWidth;
+      const vh = els.video.videoHeight;
+      const sw = vw / zoom;
+      const sh = vh / zoom;
+      pctx.drawImage(els.video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, proc.width, proc.height);
+    } else pctx.drawImage(els.video, 0, 0, proc.width, proc.height);
     return pctx.getImageData(0, 0, proc.width, proc.height);
   }
 
   // ---------- calibration ----------
   function enterTap() {
     phase = 'tap';
+    els.zoomRow.hidden = false;
     taps = [];
     els.calActions.hidden = true;
     els.runActions.hidden = true;
@@ -149,6 +213,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
 
   function enterConfirm(orient) {
     phase = 'confirm';
+    els.zoomRow.hidden = false;
     let margin = 1;
     if (orient) margin = autoOrient();
     saveCal();
@@ -190,6 +255,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     }
     det.setCalibration(cornersPx(proc.width, proc.height), proc.width, proc.height);
     phase = 'run';
+    els.zoomRow.hidden = true;
     els.calActions.hidden = true;
     els.runActions.hidden = false;
     note('', 'מרגע זה כל מהלך על הלוח נרשם לבד. אם משהו נרשם לא נכון: "בטל מהלך אחרון" והזינו ידנית.');
@@ -401,6 +467,10 @@ export function initCamera({ getChess, applyMove, canDetect }) {
   };
   $('cam-recal2').onclick = $('cam-recal').onclick;
   $('cam-go').onclick = startDetecting;
+  els.zoom.addEventListener('input', () => changeZoom(els.zoom.value));
+  const nudge = (dir) => changeZoom(+els.zoom.value + dir * Math.max(+els.zoom.step, (+els.zoom.max - +els.zoom.min) / 20));
+  $('cam-zoom-in').onclick = () => nudge(1);
+  $('cam-zoom-out').onclick = () => nudge(-1);
   $('cam-sync').onclick = resync;
   els.overlay.addEventListener('pointerdown', onTap);
   window.addEventListener('resize', sizeOverlay);
