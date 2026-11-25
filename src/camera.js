@@ -220,7 +220,7 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     els.calActions.hidden = false;
     els.runActions.hidden = true;
     els.cands.innerHTML = '';
-    status('בדקו שהרשת יושבת על המשבצות ושהתוויות <b>a1</b> ו-<b>h8</b> בפינות הנכונות. אם לא, לחצו "סובב". לחיצה ליד פינה מזיזה אותה.', 'info');
+    status('בדקו שהרשת יושבת על המשבצות ושהתוויות <b>a1</b> ו-<b>h8</b> בפינות הנכונות. אם לא, לחצו "סובב". כדי לתקן פינה: לחצו עליה, החזיקו וגררו למקום.', 'info');
     if (orient && margin < 0.3) note('bad', 'לא הייתי בטוח באיזה צד הלבן. בדקו את התוויות ולחצו "סובב" עד שהן נכונות.');
     else if (orient) note('', '');
     warnAngle();
@@ -235,28 +235,106 @@ export function initCamera({ getChess, applyMove, canDetect }) {
   }
 
   function onTap(ev) {
-    if (phase !== 'tap' && phase !== 'confirm') return;
+    if (phase !== 'tap' || drag) return;
     const r = els.overlay.getBoundingClientRect();
-    const p = [(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height];
-    if (phase === 'tap') {
-      taps.push(p);
-      if (taps.length === 4) enterConfirm(true);
-    } else {
-      let k = 0;
-      let best = Infinity;
-      taps.forEach((t, i) => {
-        const d = Math.hypot((t[0] - p[0]) * r.width, (t[1] - p[1]) * r.height);
-        if (d < best) {
-          best = d;
-          k = i;
-        }
-      });
-      taps[k] = p;
+    taps.push([(ev.clientX - r.left) / r.width, (ev.clientY - r.top) / r.height]);
+    if (taps.length === 4) enterConfirm(true);
+    draw();
+  }
+
+  // ---------- dragging a corner ----------
+  // Press on a corner, hold and move it. The corner keeps its distance from the
+  // finger, so it does not jump under it, and a magnifier shows where it is.
+  const GRAB = 34; // px around a corner that grab it
+  let drag = null; // { k, dx, dy, x, y } (normalised)
+  function startDrag(clientX, clientY) {
+    if ((phase !== 'confirm' && phase !== 'run') || taps.length < 4) return false;
+    const r = els.overlay.getBoundingClientRect();
+    const p = [(clientX - r.left) / r.width, (clientY - r.top) / r.height];
+    let k = -1;
+    let best = GRAB;
+    taps.forEach((t, i) => {
+      const d = Math.hypot((t[0] - p[0]) * r.width, (t[1] - p[1]) * r.height);
+      if (d < best) {
+        best = d;
+        k = i;
+      }
+    });
+    if (k < 0) return false;
+    drag = { k, dx: taps[k][0] - p[0], dy: taps[k][1] - p[1], moved: false };
+    draw();
+    return true;
+  }
+  function moveDrag(clientX, clientY) {
+    if (!drag) return;
+    const r = els.overlay.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (clientX - r.left) / r.width + drag.dx));
+    const y = Math.min(1, Math.max(0, (clientY - r.top) / r.height + drag.dy));
+    taps[drag.k] = [x, y];
+    drag.moved = true;
+    draw();
+  }
+  function endDrag() {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    if (moved) {
       saveCal();
       note('', '');
       warnAngle();
+      if (phase === 'run') {
+        // new board outline: start again from the board as it is now
+        det.setCalibration(cornersPx(proc.width, proc.height), proc.width, proc.height);
+        clearCandidates();
+        note('', 'הפינה הוזזה. המצלמה מסתנכרנת מחדש עם הלוח, ודאו שהוא תואם למסך.');
+      }
     }
     draw();
+  }
+
+  // magnified picture around the corner being dragged
+  function drawLoupe(g, W, H, dpr) {
+    const v = els.video;
+    if (!drag || !v.videoWidth) return;
+    const [nx, ny] = taps[drag.k];
+    const R = 52 * dpr; // loupe radius
+    const MAG = 3;
+    // place it away from the finger: above, or below near the top edge
+    let cx = nx * W + (nx > 0.5 ? -1 : 1) * R * 1.2;
+    let cy = ny * H - R * 1.9;
+    if (cy < R + 4) cy = ny * H + R * 1.9;
+    cx = Math.min(W - R - 2, Math.max(R + 2, cx));
+    cy = Math.min(H - R - 2, Math.max(R + 2, cy));
+    // the displayed picture shows the centre 1/zoom of the video when zoom is digital
+    const z = !hwZoom && zoom > 1 ? zoom : 1;
+    const vx = ((nx - 0.5) / z + 0.5) * v.videoWidth;
+    const vy = ((ny - 0.5) / z + 0.5) * v.videoHeight;
+    const pxPerDisp = v.videoWidth / z / W; // video px per overlay px
+    const half = (R / MAG) * pxPerDisp;
+    g.save();
+    g.beginPath();
+    g.arc(cx, cy, R, 0, Math.PI * 2);
+    g.closePath();
+    g.fillStyle = '#000';
+    g.fill();
+    g.clip();
+    try {
+      g.drawImage(v, vx - half, vy - half, half * 2, half * 2, cx - R, cy - R, R * 2, R * 2);
+    } catch (e) {}
+    g.strokeStyle = '#e3b341';
+    g.lineWidth = 1.5 * dpr;
+    g.beginPath();
+    g.moveTo(cx - R, cy);
+    g.lineTo(cx + R, cy);
+    g.moveTo(cx, cy - R);
+    g.lineTo(cx, cy + R);
+    g.stroke();
+    g.restore();
+    g.strokeStyle = '#e3b341';
+    g.lineWidth = 3 * dpr;
+    g.beginPath();
+    g.arc(cx, cy, R, 0, Math.PI * 2);
+    g.stroke();
   }
 
   function startDetecting() {
@@ -451,14 +529,18 @@ export function initCamera({ getChess, applyMove, canDetect }) {
       g.fillStyle = lbl[0] === 'a' && lbl[1] === '1' ? '#7fe0a3' : '#f4d98b';
       g.fillText(lbl, x, y);
     }
-    if (phase === 'confirm') {
-      g.fillStyle = '#e3b341';
-      for (const [x, y] of taps) {
-        g.beginPath();
-        g.arc(x * W, y * H, 6 * dpr, 0, Math.PI * 2);
-        g.fill();
-      }
-    }
+    // corner handles: press and drag to move
+    taps.forEach(([x, y], i) => {
+      const active = drag && drag.k === i;
+      g.beginPath();
+      g.arc(x * W, y * H, (active ? 11 : phase === 'run' ? 5 : 9) * dpr, 0, Math.PI * 2);
+      g.fillStyle = active ? 'rgba(227,179,65,.35)' : phase === 'run' ? 'rgba(227,179,65,.7)' : '#e3b341';
+      g.fill();
+      g.strokeStyle = active ? '#e3b341' : 'rgba(0,0,0,.7)';
+      g.lineWidth = 2 * dpr;
+      g.stroke();
+    });
+    drawLoupe(g, W, H, dpr);
   }
 
   // ---------- wiring ----------
@@ -483,7 +565,44 @@ export function initCamera({ getChess, applyMove, canDetect }) {
   $('cam-zoom-in').onclick = () => nudge(1);
   $('cam-zoom-out').onclick = () => nudge(-1);
   $('cam-sync').onclick = resync;
-  els.overlay.addEventListener('pointerdown', onTap);
+  els.overlay.addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType !== 'touch' && startDrag(ev.clientX, ev.clientY)) {
+      ev.preventDefault();
+      return;
+    }
+    if (ev.pointerType !== 'touch') onTap(ev);
+  });
+  window.addEventListener('pointermove', (ev) => {
+    if (drag && ev.pointerType !== 'touch') moveDrag(ev.clientX, ev.clientY);
+  });
+  window.addEventListener('pointerup', (ev) => {
+    if (ev.pointerType !== 'touch') endDrag();
+  });
+  // touch: only a touch that starts on a corner stops the page from scrolling
+  els.overlay.addEventListener(
+    'touchstart',
+    (ev) => {
+      const t = ev.changedTouches[0];
+      if (ev.touches.length === 1 && startDrag(t.clientX, t.clientY)) ev.preventDefault();
+      else if (ev.touches.length === 1 && phase === 'tap') {
+        ev.preventDefault();
+        onTap({ clientX: t.clientX, clientY: t.clientY });
+      }
+    },
+    { passive: false }
+  );
+  els.overlay.addEventListener(
+    'touchmove',
+    (ev) => {
+      if (!drag) return;
+      ev.preventDefault();
+      const t = ev.touches[0];
+      moveDrag(t.clientX, t.clientY);
+    },
+    { passive: false }
+  );
+  els.overlay.addEventListener('touchend', endDrag);
+  els.overlay.addEventListener('touchcancel', endDrag);
   window.addEventListener('resize', sizeOverlay);
   if ('ResizeObserver' in window) new ResizeObserver(sizeOverlay).observe(els.view);
   document.addEventListener('visibilitychange', () => {
