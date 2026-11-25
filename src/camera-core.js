@@ -402,6 +402,54 @@ function emptyDistance(img, i, empties) {
   return best;
 }
 
+// When the phone films at an angle, a tall piece covers part of the squares
+// behind it (on the far side of the board, which looks smaller in the picture).
+// How far it reaches depends on the camera angle (how much smaller the far side
+// looks) and on the piece's height: a king reaches about twice as far as a pawn.
+const HEIGHT = { p: 0.5, n: 0.65, b: 0.75, r: 0.58, q: 0.88, k: 1 };
+export function viewGeometry(corners) {
+  const Hb = boardHomography(corners);
+  const area = (f, r) => {
+    const q = [project(Hb, f, r), project(Hb, f + 1, r), project(Hb, f + 1, r + 1), project(Hb, f, r + 1)];
+    let a = 0;
+    for (let k = 0; k < 4; k++) a += q[k][0] * q[(k + 1) % 4][1] - q[(k + 1) % 4][0] * q[k][1];
+    return Math.abs(a) / 2;
+  };
+  let gx = 0, gy = 0;
+  for (let k = 0; k < 8; k++) {
+    gx += (area(7, k) - area(0, k)) / 8;
+    gy += (area(k, 7) - area(k, 0)) / 8;
+  }
+  const len = Math.hypot(gx, gy) || 1;
+  const ax = -gx / len, ay = -gy / len; // towards the far side, in files / ranks
+  // near / far size of the board along that direction
+  const near = ay < 0 ? area(3, 7) + area(4, 7) : area(3, 0) + area(4, 0);
+  const far = ay < 0 ? area(3, 0) + area(4, 0) : area(3, 7) + area(4, 7);
+  const ratio = Math.abs(ay) >= Math.abs(ax) ? near / (far || 1) : (ax > 0 ? area(0, 3) + area(0, 4) : area(7, 3) + area(7, 4)) / ((ax > 0 ? area(7, 3) + area(7, 4) : area(0, 3) + area(0, 4)) || 1);
+  const kingReach = Math.max(0, Math.min(2.5, (ratio - 1) * 0.32)); // in squares
+  // zones[type][i]: squares that a piece of this type on square i covers
+  const zones = {};
+  for (const t of Object.keys(HEIGHT)) {
+    const reach = kingReach * HEIGHT[t];
+    zones[t] = Array.from({ length: 64 }, (_, i) => {
+      const f = i & 7, r = 7 - (i >> 3);
+      const out = new Set();
+      for (let k = 1; k <= 2; k++) {
+        if (reach < k - 0.45) break; // must cover at least the front half of that square
+        const bf = Math.round(f + ax * k), br = Math.round(r + ay * k);
+        const lat = k === 1 && reach >= 0.9 ? [-1, 0, 1] : [0];
+        for (const l of lat) {
+          const ff = bf + (Math.abs(ax) < Math.abs(ay) ? l : 0);
+          const rr = br + (Math.abs(ax) < Math.abs(ay) ? 0 : l);
+          if (ff >= 0 && ff < 8 && rr >= 0 && rr < 8 && (ff !== f || rr !== r)) out.add((7 - rr) * 8 + ff);
+        }
+      }
+      return out;
+    });
+  }
+  return { kingReach, zones };
+}
+
 export class Detector {
   constructor() {
     this.map = null;
@@ -425,6 +473,7 @@ export class Detector {
     this.h = h;
     this.shift = [0, 0];
     this.map = buildMap(corners, w, h);
+    this.view = viewGeometry(corners);
     this.reset();
   }
   shiftedMap(dx, dy) {
@@ -474,7 +523,7 @@ export class Detector {
       // the move's squares, and the still squares next to them (a tall piece that
       // moved also changes how its neighbours look)
       const upd = new Set(moveSquares(move));
-      for (const i of [...upd]) for (const j of NEIGH[i]) if (this.still[j] >= 3) upd.add(j);
+      for (const i of [...upd]) for (const j of [...NEIGH[i], ...this.view.zones.k[i]]) if (this.still[j] >= 3) upd.add(j);
       for (const i of upd) this.ref.set(this.cur.subarray(i * PER, (i + 1) * PER), i * PER);
     } else if (this.cur) this.ref = this.cur.slice();
     this.pending = null;
@@ -556,19 +605,55 @@ export class Detector {
       seen.add(key);
       const sq = moveSquares(m);
       const inS = new Set(sq);
-      let inside = Infinity;
-      let still = true;
-      for (const i of sq) {
-        inside = Math.min(inside, d[i]);
-        if (!settled(i) || shadowy[i]) still = false;
-      }
+      // squares a piece stands in front of after this move (known from the position):
+      // seen at an angle they are partly hidden, so they cannot be judged by looks
+      const zones = this.view.zones;
+      const after = new Map(); // square -> piece type, after this move
+      for (let i = 0; i < 64; i++) if (board && board[i >> 3][i & 7]) after.set(i, board[i >> 3][i & 7].type);
+      const leftSq = [m.from];
+      if (m.flags.includes('e')) leftSq.push(m.to[0] + m.from[1]);
+      if (m.flags.includes('k')) leftSq.push('h' + m.from[1]);
+      if (m.flags.includes('q')) leftSq.push('a' + m.from[1]);
+      for (const x of leftSq) after.delete(sqIndex(x));
+      after.set(sqIndex(m.to), m.promotion || m.piece);
+      if (m.flags.includes('k')) after.set(sqIndex('f' + m.from[1]), 'r');
+      if (m.flags.includes('q')) after.set(sqIndex('d' + m.from[1]), 'r');
+      const hidden = (i) => {
+        for (const [j, t] of after) if (j !== i && zones[t][j].has(i)) return true;
+        return false;
+      };
+      // the pieces that move or disappear, and which squares they may cover
+      const movers = [[sqIndex(m.from), m.piece], [sqIndex(m.to), m.promotion || m.piece]];
+      if (m.captured) movers.push([sqIndex(m.flags.includes('e') ? m.to[0] + m.from[1] : m.to), m.captured]);
+      for (const x of leftSq.slice(1)) movers.push([sqIndex(x), m.flags.includes('e') ? 'p' : 'r']);
+      if (m.flags.includes('k')) movers.push([sqIndex('f' + m.from[1]), 'r']);
+      if (m.flags.includes('q')) movers.push([sqIndex('d' + m.from[1]), 'r']);
+      const coversIt = (i) => movers.some(([j, t]) => j !== i && zones[t][j].has(i));
+      // judge the move by its squares that the camera can see; a square hidden
+      // behind a piece may not change at all
       let shade = false;
       let peak = 0;
+      let inside = Infinity;
+      let still = true;
+      let visible = 0;
+      let skipped = 0; // hidden squares that did not change: no support for the move
+      let support = 0; // every square of the move that changed counts; one that did not, costs
+      let behindAPiece = 0; // squares of the move that another piece stands in front of
       for (const i of sq) {
-        if (shadowy[i]) shade = true;
         peak = Math.max(peak, d[i]);
+        if (!settled(i)) still = false;
+        if (hidden(i)) behindAPiece++;
+        if (hidden(i) && d[i] <= T) {
+          skipped++;
+          continue;
+        }
+        visible++;
+        inside = Math.min(inside, d[i]);
+        support += d[i] >= T ? Math.min(d[i], 2 * T) : 2 * (d[i] - T);
+        // a square covered by a moving piece is not "only shadow"
+        if (shadowy[i] && !coversIt(i) && !hidden(i)) shade = true;
       }
-      if (inside <= T * 0.3 || peak <= T) continue;
+      if (!visible || inside <= T * 0.3 || peak <= T) continue;
       // changes the move does not explain (a tall piece may spill onto a neighbour)
       let far = 0;
       let nearSum = 0;
@@ -576,28 +661,34 @@ export class Detector {
       for (const i of changedList) {
         if (inS.has(i) || !settled(i) || shadowy[i]) continue;
         // a square whose piece is gone is never "spill": some move took that piece away
-        const near = NEIGH[i].some((j) => inS.has(j)) && !vacated[i];
-        if (near) nearSum += d[i] * 0.6;
+        const covered = !vacated[i] && coversIt(i); // a tall piece of the move covers it
+        const near = !vacated[i] && (covered || NEIGH[i].some((j) => inS.has(j)));
+        if (covered) nearSum += d[i] * 0.3;
+        else if (near) nearSum += d[i] * 0.6;
         else far += d[i] + (vacated[i] ? T : 0);
-        if (!(near && d[i] < 0.85 * inside) && d[i] > 0.45 * inside) blocking++;
+        if (!(covered || (near && d[i] < 0.85 * inside)) && d[i] > 0.45 * inside) blocking++;
       }
       // what we know stood on the squares: every square the move empties must now
       // look empty, and the square it goes to must look occupied
+      // (squares hidden behind another piece are skipped; if all are hidden,
+      // the evidence is unknown and the move is judged by the change pattern alone)
       let evidence = 0;
+      let judged = false;
       if (board && emptyNow.length >= 4) {
-        const left = [m.from];
-        if (m.flags.includes('e')) left.push(m.to[0] + m.from[1]);
-        if (m.flags.includes('k')) left.push('h' + m.from[1]);
-        if (m.flags.includes('q')) left.push('a' + m.from[1]);
-        const ev = left.map((x) => flip[sqIndex(x)]);
-        if (!m.captured) ev.push(flip[sqIndex(m.to)]);
-        evidence = Math.min(...ev);
+        const ev = leftSq.map(sqIndex).filter((i) => !hidden(i)).map((i) => flip[i]);
+        const ti = sqIndex(m.to);
+        if (!m.captured && !hidden(ti)) ev.push(flip[ti]);
+        if (ev.length) {
+          evidence = Math.min(...ev);
+          judged = true;
+        }
       }
       // a weaker change is enough when the position confirms the move
       const ready = still && !shade && (inside > T || (inside > T * 0.6 && evidence > 0.3) || evidence > 0.6);
+      if (!judged) evidence = null;
       const promo = m.promotion ? moves.find((x) => x.from === m.from && x.to === m.to && x.promotion === 'q') || m : m;
       const unexplained = far + nearSum;
-      ranked.push({ move: promo, inside, ready, still, shade, spill: unexplained, blocking, evidence, score: Math.min(inside, 3 * T) + 0.4 * T * evidence - 0.8 * unexplained });
+      ranked.push({ move: promo, inside, ready, still, shade, visible, behindAPiece, spill: unexplained, blocking, evidence, score: support + 0.4 * T * (evidence || 0) - 0.8 * unexplained - 0.5 * T * skipped });
     }
     ranked.sort((a, b) => b.score - a.score);
     const ready = ranked.filter((r) => r.ready);
@@ -618,14 +709,33 @@ export class Detector {
       }
     }
     const best = ready[0];
-    const rival = ranked.find((r) => r !== best && !r.shade);
+    const rival = ranked.find((r) => r !== best && (!r.shade || !r.still || (r.evidence != null && r.evidence > 0.3)));
     let accept = false;
     const known = board && emptyNow.length >= 4;
-    if (best && best.evidence > (known ? 0.3 : -1) && (!rival || best.score - rival.score > 0.25 * T)) {
-      if (!best.blocking) accept = true;
-      // someone keeps a hand or arm still over another part of the board:
-      // after a while, accept a move that is clear and that the position confirms
-      else if (this.stuck >= 5 && best.evidence > 0.3) accept = true;
+    // another move that fits almost as well, or that is still being made, or that
+    // the position confirms while this one cannot be checked: ask, do not guess
+    const unsure = best && rival && ((rival.score >= best.score) || (!rival.still && rival.score > best.score - T) ||
+      (rival.score > best.score - T && rival.evidence != null && (best.evidence == null || rival.evidence > best.evidence + 0.3)) || (best && best.evidence == null && rival.evidence != null && rival.evidence > 0.3));
+    const steep = this.view.kingReach > 0.9;
+    // at a steep angle much of the board is hidden: approve only a move that is seen
+    // whole and that the position confirms; otherwise ask
+    const fullySeen = best && !best.behindAPiece && best.inside > T && best.evidence != null && best.evidence > 0.3;
+    if (best && !unsure && (!steep || fullySeen)) {
+      const margin = rival ? best.score - rival.score : Infinity;
+      if (best.evidence == null) {
+        // the squares are hidden behind other pieces (camera at an angle): accept a
+        // move whose change pattern is clearly the best, with nothing else changed
+        if (!best.blocking && best.inside > T && best.visible >= 2 && margin > 0.5 * T) accept = true;
+      } else if (best.evidence > (known ? 0.3 : -1) && margin > 0.25 * T) {
+        if (!best.blocking) accept = true;
+        // someone keeps a hand or arm still over another part of the board:
+        // after a while, accept a move that is clear and that the position confirms
+        else if (this.stuck >= 5 && best.evidence > 0.3) accept = true;
+      }
+      // What the organiser did by hand: the board has been still for a while and the
+      // first suggestion is clearly ahead of the second, every square of it that the
+      // camera sees has changed, and the position does not contradict it. Approve it.
+      if (!accept && this.stuck >= 8 && best === ranked[0] && best.visible >= 2 && best.inside > T && margin > 0.5 * T && (best.evidence == null || best.evidence > 0)) accept = true;
     }
     if (accept) {
       const key = best.move.from + best.move.to;
@@ -638,7 +748,7 @@ export class Detector {
       }
       if (this.pendingCount >= 2) {
         const out = { state: 'move', move: best.move, changed: changedList };
-        if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~') + (shadowy[i] ? 's' : '') + (vacated[i] ? 'v' : '')), flip: changedList.map((i) => sqName(i) + ':' + flip[i].toFixed(2)), top: ranked.slice(0, 4).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`), stuck: this.stuck };
+        if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~') + (shadowy[i] ? 's' : '') + (vacated[i] ? 'v' : '')), flip: changedList.map((i) => sqName(i) + ':' + flip[i].toFixed(2)), top: ranked.slice(0, 4).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence == null ? 'hid' : r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`), stuck: this.stuck };
         return out;
       }
       return { state: 'confirming', move: best.move, changed: changedList };
@@ -650,9 +760,9 @@ export class Detector {
     if (settledChanged >= 10 && this.stuck % 5 === 1 && this.realign(frame)) return { state: 'realigned' };
     const candidates = ranked.slice(0, 3).map((r) => r.move);
     // is there a move the position supports (a piece's square now looks empty)?
-    const plausible = !known || ranked.some((r) => !r.shade && r.evidence > 0.3);
+    const plausible = !known || ranked.some((r) => !r.shade && (r.evidence == null || r.evidence > 0.3));
     const out = { state: settledChanged >= 12 ? 'shifted' : 'unclear', changed: changedList, candidates, stuck: this.stuck, plausible };
-    if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~')), top: ranked.slice(0, 3).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} st=${r.still} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`) };
+    if (this.debug) out.debug = { T, d: changedList.map((i) => sqName(i) + ':' + d[i].toFixed(0) + (settled(i) ? '' : '~')), top: ranked.slice(0, 3).map((r) => `${r.move.san} in=${r.inside.toFixed(0)} rdy=${r.ready} st=${r.still} sh=${r.shade} sp=${r.spill.toFixed(0)} bl=${r.blocking} ev=${r.evidence == null ? 'hid' : r.evidence.toFixed(2)} sc=${r.score.toFixed(0)}`) };
     return out;
   }
 }

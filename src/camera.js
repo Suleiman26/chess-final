@@ -1,7 +1,7 @@
 // Camera mode for the control page: a phone on a stand films the real board and
 // the moves are entered automatically. The video never leaves this browser:
 // frames are compared in memory and dropped; only the recognised move is used.
-import { Detector, buildMap, orderCorners, orientationScore, warp, boardHomography, project, sqName } from './camera-core.js';
+import { Detector, buildMap, orderCorners, orientationScore, warp, boardHomography, project, sqName, viewGeometry } from './camera-core.js';
 import { figurine, sideHe, escapeHtml } from './common.js';
 
 const CAL_KEY = 'cf:cam';
@@ -223,6 +223,15 @@ export function initCamera({ getChess, applyMove, canDetect }) {
     status('בדקו שהרשת יושבת על המשבצות ושהתוויות <b>a1</b> ו-<b>h8</b> בפינות הנכונות. אם לא, לחצו "סובב". לחיצה ליד פינה מזיזה אותה.', 'info');
     if (orient && margin < 0.3) note('bad', 'לא הייתי בטוח באיזה צד הלבן. בדקו את התוויות ולחצו "סובב" עד שהן נכונות.');
     else if (orient) note('', '');
+    warnAngle();
+  }
+
+  // A phone that films at a steep angle from the side sees tall pieces cover the
+  // squares behind them; then part of the moves cannot be told apart for sure.
+  function warnAngle() {
+    if (taps.length < 4) return;
+    const v = viewGeometry(cornersPx(proc.width, proc.height));
+    if (v.kingReach > 0.9) note('bad', 'הטלפון מצלם בזווית חדה מהצד, והכלים הגבוהים מסתירים משבצות. כדאי להגביה את הטלפון כך שיהיה יותר מעל הלוח. בזווית כזאת חלק מהמהלכים יחכו לאישור שלכם.');
   }
 
   function onTap(ev) {
@@ -244,6 +253,8 @@ export function initCamera({ getChess, applyMove, canDetect }) {
       });
       taps[k] = p;
       saveCal();
+      note('', '');
+      warnAngle();
     }
     draw();
   }
