@@ -597,6 +597,11 @@ export class Detector {
     const shadowy = new Uint8Array(64);
     for (const i of changedList) if (flip[i] < 0.35 && shadowResidual(img, this.ref, i) < T * 0.5) shadowy[i] = 1;
 
+    // changes a move must explain: the clear ones, and weaker ones on squares where
+    // the position says a piece stood and it now looks empty
+    const unexplainedPool = changedList.slice();
+    for (let i = 0; i < 64; i++) if (vacated[i] && d[i] <= T && d[i] > T * 0.6) unexplainedPool.push(i);
+
     const seen = new Set();
     const ranked = [];
     for (const m of moves) {
@@ -655,18 +660,28 @@ export class Detector {
       }
       if (!visible || inside <= T * 0.3 || peak <= T) continue;
       // changes the move does not explain (a tall piece may spill onto a neighbour)
+      const toI = sqIndex(m.to);
+      const fromI = sqIndex(m.from);
+      // squares next to where the moving piece stands now or stood: a piece with a
+      // wide head (a knight) shows up there too, so a change there, even one that
+      // looks like a piece went missing, is the moving piece itself
+      // (next to the square it left, it can only uncover things, never hide a piece)
+      const beside = (i) => NEIGH[toI].includes(i) || (NEIGH[fromI].includes(i) && !vacated[i]);
       let far = 0;
       let nearSum = 0;
       let blocking = 0;
-      for (const i of changedList) {
+      let veto = false; // a piece is clearly gone from a square this move does not touch
+      for (const i of unexplainedPool) {
         if (inS.has(i) || !settled(i) || shadowy[i]) continue;
-        // a square whose piece is gone is never "spill": some move took that piece away
-        const covered = !vacated[i] && coversIt(i); // a tall piece of the move covers it
-        const near = !vacated[i] && (covered || NEIGH[i].some((j) => inS.has(j)));
-        if (covered) nearSum += d[i] * 0.3;
+        if (vacated[i] && flip[i] > 0.55 && !NEIGH[toI].includes(i) && !coversIt(i)) veto = true;
+        const covered = (!vacated[i] || beside(i)) && coversIt(i); // a tall piece of the move covers it
+        const next = beside(i) && board && !(vacated[i] && flip[i] > 0.6);
+        // a square whose piece is clearly gone is never "spill": some move took it away
+        const near = !vacated[i] && NEIGH[i].some((j) => inS.has(j));
+        if (covered || next) nearSum += d[i] * 0.3;
         else if (near) nearSum += d[i] * 0.6;
         else far += d[i] + (vacated[i] ? T : 0);
-        if (!(covered || (near && d[i] < 0.85 * inside)) && d[i] > 0.45 * inside) blocking++;
+        if (!(covered || next || (near && d[i] < 0.85 * inside)) && d[i] > 0.45 * inside) blocking++;
       }
       // what we know stood on the squares: every square the move empties must now
       // look empty, and the square it goes to must look occupied
@@ -688,10 +703,10 @@ export class Detector {
       if (!judged) evidence = null;
       const promo = m.promotion ? moves.find((x) => x.from === m.from && x.to === m.to && x.promotion === 'q') || m : m;
       const unexplained = far + nearSum;
-      ranked.push({ move: promo, inside, ready, still, shade, visible, behindAPiece, spill: unexplained, blocking, evidence, score: support + 0.4 * T * (evidence || 0) - 0.8 * unexplained - 0.5 * T * skipped });
+      ranked.push({ move: promo, inside, ready, veto, still, shade, visible, behindAPiece, spill: unexplained, blocking, evidence, score: support + 0.4 * T * (evidence || 0) - 0.8 * unexplained - 0.5 * T * skipped });
     }
     ranked.sort((a, b) => b.score - a.score);
-    const ready = ranked.filter((r) => r.ready);
+    const ready = ranked.filter((r) => r.ready && !r.veto);
     // A square that has looked changed for a while, but whose occupancy still
     // matches the known position (the piece is still there, or it is still empty),
     // only changed in looks (spill of a tall piece, light): take it as reference.
@@ -709,18 +724,20 @@ export class Detector {
       }
     }
     const best = ready[0];
-    const rival = ranked.find((r) => r !== best && (!r.shade || !r.still || (r.evidence != null && r.evidence > 0.3)));
+    const rival = ranked.find((r) => r !== best && !r.veto && (!r.shade || !r.still || (r.evidence != null && r.evidence > 0.3)));
     let accept = false;
     const known = board && emptyNow.length >= 4;
     // another move that fits almost as well, or that is still being made, or that
     // the position confirms while this one cannot be checked: ask, do not guess
     const unsure = best && rival && ((rival.score >= best.score) || (!rival.still && rival.score > best.score - T) ||
       (rival.score > best.score - T && rival.evidence != null && (best.evidence == null || rival.evidence > best.evidence + 0.3)) || (best && best.evidence == null && rival.evidence != null && rival.evidence > 0.3));
+    // the same piece may still be on its way: a square it could go to is still moving
+    const travelling = best && moves.some((x) => x.from === best.move.from && x.to !== best.move.to && d[sqIndex(x.to)] > T && !settled(sqIndex(x.to)));
     const steep = this.view.kingReach > 0.9;
     // at a steep angle much of the board is hidden: approve only a move that is seen
     // whole and that the position confirms; otherwise ask
     const fullySeen = best && !best.behindAPiece && best.inside > T && best.evidence != null && best.evidence > 0.3;
-    if (best && !unsure && (!steep || fullySeen)) {
+    if (best && !unsure && !travelling && (!steep || fullySeen)) {
       const margin = rival ? best.score - rival.score : Infinity;
       if (best.evidence == null) {
         // the squares are hidden behind other pieces (camera at an angle): accept a
@@ -735,7 +752,7 @@ export class Detector {
       // What the organiser did by hand: the board has been still for a while and the
       // first suggestion is clearly ahead of the second, every square of it that the
       // camera sees has changed, and the position does not contradict it. Approve it.
-      if (!accept && this.stuck >= 8 && best === ranked[0] && best.visible >= 2 && best.inside > T && margin > 0.5 * T && (best.evidence == null || best.evidence > 0)) accept = true;
+      if (!accept && this.stuck >= 8 && best === ranked.find((r) => !r.veto) && best.visible >= 2 && best.inside > T && margin > 0.5 * T && (best.evidence == null || best.evidence > 0)) accept = true;
     }
     if (accept) {
       const key = best.move.from + best.move.to;
